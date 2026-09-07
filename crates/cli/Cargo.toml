@@ -1,0 +1,12 @@
+[package]
+name = "todo-cli"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dirs = "7.0.0"
+thiserror = "2.0.20"
+todo-core = { version = "0.1.0", path = "../core" }
+
+[dev-dependencies]
+todo-core = { version = "0.1.0", path = "../core", features = ["testing"] }

@@ -1,0 +1,24 @@
+---
+source: crates/core/tests/snapshots.rs
+expression: "doc.read(ViewFilter::Completed, &clock)"
+---
+rows:
+  - id: "5"
+    title: Submit taxes
+    notes: ""
+    done: true
+    due: 2592000
+    due_label: 31 Jan
+    overdue: false
+  - id: "4"
+    title: Clean garage
+    notes: ""
+    done: true
+    due: ~
+    due_label: ~
+    overdue: false
+view: Completed
+active_count: 4
+can_undo: true
+can_redo: false
+revision: 12

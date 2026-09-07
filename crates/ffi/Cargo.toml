@@ -1,0 +1,21 @@
+[package]
+name = "todo-ffi"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "todo_ffi"
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["cli"]
+
+[dependencies]
+thiserror = "2.0.20"
+todo-core = { version = "0.1.0", path = "../core" }
+uniffi = { version = "0.32.0" }
+
+[features]
+cli = ["uniffi/cli"]

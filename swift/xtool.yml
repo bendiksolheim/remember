@@ -1,0 +1,5 @@
+version: 1
+bundleID: no.bendik.todo
+product: TodoApp
+infoPath: ../apple/Info-iOS.plist
+iconPath: ../apple/AppIcon.png

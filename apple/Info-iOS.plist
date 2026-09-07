@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    xtool derives CFBundleIdentifier, CFBundleExecutable, CFBundleName,
+    CFBundlePackageType, CFBundleVersion, MinimumOSVersion, UIDeviceFamily,
+    and UILaunchScreen from swift/xtool.yml (bundleID, product) — see
+    Sources/PackLib/Planner.swift. Only overrides and additions belong here.
+  -->
+</dict>
+</plist>

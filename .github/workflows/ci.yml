@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup component add clippy rustfmt llvm-tools-preview
+
+      - name: Install cargo-nextest and cargo-llvm-cov
+        run: |
+          cargo install cargo-nextest cargo-llvm-cov
+
+      - name: cargo xtask ci
+        run: cargo xtask ci

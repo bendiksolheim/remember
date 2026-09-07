@@ -1,0 +1,16 @@
+---
+source: crates/core/tests/snapshots.rs
+expression: labels
+---
+- - overdue
+  - 8 Jan
+- - today
+  - Today
+- - tomorrow
+  - Tomorrow
+- - this_week
+  - 15 Jan
+- - next_month
+  - 10 Feb
+- - next_year
+  - 11 Jan

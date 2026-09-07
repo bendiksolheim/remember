@@ -1,0 +1,52 @@
+---
+source: crates/core/tests/snapshots.rs
+expression: "doc.read(ViewFilter::All, &clock)"
+---
+rows:
+  - id: "5"
+    title: Submit taxes
+    notes: ""
+    done: true
+    due: 2592000
+    due_label: 31 Jan
+    overdue: false
+  - id: "4"
+    title: Clean garage
+    notes: ""
+    done: true
+    due: ~
+    due_label: ~
+    overdue: false
+  - id: "3"
+    title: Pay rent
+    notes: ""
+    done: false
+    due: 604800
+    due_label: 8 Jan
+    overdue: true
+  - id: "2"
+    title: Call dentist
+    notes: ""
+    done: false
+    due: 950400
+    due_label: Tomorrow
+    overdue: false
+  - id: "1"
+    title: Write report
+    notes: ""
+    done: false
+    due: 864000
+    due_label: Today
+    overdue: false
+  - id: "0"
+    title: Buy milk
+    notes: ""
+    done: false
+    due: ~
+    due_label: ~
+    overdue: false
+view: All
+active_count: 4
+can_undo: true
+can_redo: false
+revision: 12
