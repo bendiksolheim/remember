@@ -128,13 +128,16 @@ fn replay_one(
             )
             .unwrap();
             let snap = doc.read(ViewFilter::All, clock);
-            let new_id = snap
+            // An empty/whitespace-only title is a no-op (see apply_add), so
+            // there may be no new row to find here.
+            if let Some(new_id) = snap
                 .rows
                 .iter()
                 .map(|r| r.id.clone())
                 .find(|id| !before.contains(id))
-                .unwrap();
-            known.push(new_id);
+            {
+                known.push(new_id);
+            }
             true
         }
         Op::SetTitle { target_seed, title } => resolve_target(known, *target_seed)

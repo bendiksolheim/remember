@@ -120,7 +120,7 @@ impl Doc {
     ) -> Result<(), CoreError> {
         match cmd {
             Command::Add { title, after } => self.apply_add(title, after, clock, ids),
-            Command::SetTitle { id, title } => self.set_field(&id, "title", title.into()),
+            Command::SetTitle { id, title } => self.apply_set_title(&id, title),
             Command::SetNotes { id, notes } => self.set_field(&id, "notes", notes.into()),
             Command::SetDone { id, done } => self.set_field(&id, "done", done.into()),
             Command::SetDue { id, due } => self.apply_set_due(&id, due),
@@ -198,6 +198,20 @@ impl Doc {
         tasks.ensure_mergeable_map(id).map_err(doc_err)
     }
 
+    fn apply_set_title(&mut self, id: &str, title: String) -> Result<(), CoreError> {
+        // Check the id before the title: an unknown id must report NotFound
+        // even when the title is also empty, not get masked by the no-op path.
+        self.existing_task_map(id)?;
+        let trimmed = title.trim();
+        if trimmed.is_empty() {
+            // Same reasoning as set_field's same-value guard: an empty title
+            // must not commit or bump `revision`, or Undo would revert the
+            // previous real change instead of being a true no-op.
+            return Ok(());
+        }
+        self.set_field(id, "title", trimmed.into())
+    }
+
     fn set_field(&mut self, id: &str, field: &str, value: LoroValue) -> Result<(), CoreError> {
         let task = self.existing_task_map(id)?;
         // Writing a value identical to the current one produces no new Loro
@@ -256,10 +270,18 @@ impl Doc {
         let order = self.doc.get_movable_list("order");
         let pos = self.insert_position(&order, after.as_deref())?;
 
+        let trimmed = title.trim();
+        if trimmed.is_empty() {
+            // Mirrors apply_set_title: an empty title is a full no-op here,
+            // not a task with a blank name — nothing is created, `revision`
+            // doesn't move.
+            return Ok(());
+        }
+
         let id = ids.new_id();
         let tasks = self.doc.get_map("tasks");
         let task = tasks.ensure_mergeable_map(&id).map_err(doc_err)?;
-        task.insert("title", title).map_err(doc_err)?;
+        task.insert("title", trimmed).map_err(doc_err)?;
         task.insert("notes", "").map_err(doc_err)?;
         task.insert("done", false).map_err(doc_err)?;
         task.insert("due", LoroValue::Null).map_err(doc_err)?;

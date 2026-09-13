@@ -126,6 +126,113 @@ fn set_title_to_current_value_is_noop() {
 }
 
 #[test]
+fn set_title_trims_surrounding_whitespace() {
+    let mut doc = Doc::new(1).unwrap();
+    let clock = FixedClock(0);
+    let ids = SeqIdSource::new();
+    let id = add(&mut doc, &clock, &ids, "a");
+    doc.apply(
+        Command::SetTitle {
+            id,
+            title: "  new title  ".to_string(),
+        },
+        &clock,
+        &ids,
+    )
+    .unwrap();
+    assert_eq!(
+        titles(&doc.read(ViewFilter::All, &clock)),
+        vec!["new title"]
+    );
+}
+
+#[test]
+fn set_title_empty_after_trim_is_noop() {
+    let mut doc = Doc::new(1).unwrap();
+    let clock = FixedClock(0);
+    let ids = SeqIdSource::new();
+    let id = add(&mut doc, &clock, &ids, "a");
+    let before = doc.read(ViewFilter::All, &clock).revision;
+    doc.apply(
+        Command::SetTitle {
+            id,
+            title: "   ".to_string(),
+        },
+        &clock,
+        &ids,
+    )
+    .unwrap();
+    let snap = doc.read(ViewFilter::All, &clock);
+    assert_eq!(snap.revision, before);
+    assert_eq!(titles(&snap), vec!["a"]);
+}
+
+#[test]
+fn set_title_unknown_id_is_not_found() {
+    let mut doc = Doc::new(1).unwrap();
+    let clock = FixedClock(0);
+    let ids = SeqIdSource::new();
+    let err = doc
+        .apply(
+            Command::SetTitle {
+                id: "nope".to_string(),
+                title: "new".to_string(),
+            },
+            &clock,
+            &ids,
+        )
+        .unwrap_err();
+    assert_eq!(err, CoreError::NotFound("nope".to_string()));
+}
+
+#[test]
+fn set_title_unknown_id_with_empty_title_is_still_not_found() {
+    let mut doc = Doc::new(1).unwrap();
+    let clock = FixedClock(0);
+    let ids = SeqIdSource::new();
+    let err = doc
+        .apply(
+            Command::SetTitle {
+                id: "nope".to_string(),
+                title: "   ".to_string(),
+            },
+            &clock,
+            &ids,
+        )
+        .unwrap_err();
+    assert_eq!(err, CoreError::NotFound("nope".to_string()));
+}
+
+#[test]
+fn add_trims_surrounding_whitespace() {
+    let mut doc = Doc::new(1).unwrap();
+    let clock = FixedClock(0);
+    let ids = SeqIdSource::new();
+    add(&mut doc, &clock, &ids, "  a  ");
+    assert_eq!(titles(&doc.read(ViewFilter::All, &clock)), vec!["a"]);
+}
+
+#[test]
+fn add_empty_after_trim_is_noop() {
+    let mut doc = Doc::new(1).unwrap();
+    let clock = FixedClock(0);
+    let ids = SeqIdSource::new();
+    let before = doc.read(ViewFilter::All, &clock).revision;
+    doc.apply(
+        Command::Add {
+            title: "   ".to_string(),
+            after: None,
+        },
+        &clock,
+        &ids,
+    )
+    .unwrap();
+    let snap = doc.read(ViewFilter::All, &clock);
+    assert_eq!(snap.revision, before);
+    assert!(snap.rows.is_empty());
+}
+
+#[test]
 fn set_done_to_current_value_is_noop() {
     let mut doc = Doc::new(1).unwrap();
     let clock = FixedClock(0);
