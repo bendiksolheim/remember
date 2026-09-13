@@ -143,6 +143,7 @@ impl App {
 
     pub fn set_view(&self, view: ViewFilter) {
         lock(&self.shared.state).view = view;
+        self.notify();
     }
 
     pub fn current(&self) -> Snapshot {

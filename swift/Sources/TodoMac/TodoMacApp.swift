@@ -1,18 +1,18 @@
 import SwiftUI
-import TodoKit
-import TodoUI
 
+// All lifecycle -- the hotkey, the panel, showing/hiding, the menu-bar item
+// -- lives in AppDelegate now; TaskListView/TaskDetailView (TodoUI) are no
+// longer wired up here (only iOS's TodoIOSApp still uses them). `Settings`
+// is the one SwiftUI Scene that creates no visible window, since the App
+// protocol requires at least one Scene but this app's real UI is the
+// manually-managed SpotlightPanel, not anything Scene-owned.
 @main
 struct TodoMacApp: SwiftUI.App {
-    @State private var model = try! TodoModel()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        WindowGroup {
-            NavigationStack {
-                TaskListView()
-            }
-            .environment(model)
+        Settings {
+            EmptyView()
         }
-        .defaultSize(width: 420, height: 640)
     }
 }

@@ -159,6 +159,25 @@ fn set_view_changes_what_current_returns() {
 }
 
 #[test]
+fn set_view_notifies_existing_subscribers() {
+    let dir = TempDir::new().unwrap();
+    let app = App::open(&db_path(&dir, "todo.sqlite3")).unwrap();
+    add(&app, "a");
+    let id = app.current().rows[0].id.clone();
+    app.dispatch(Command::SetDone { id, done: true }).unwrap();
+
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let received_clone = Arc::clone(&received);
+    app.subscribe(move |snap| received_clone.lock().unwrap().push(snap.rows.len()));
+    // subscribe() itself fires once immediately with the current (All) view.
+    assert_eq!(*received.lock().unwrap(), vec![1]);
+
+    app.set_view(ViewFilter::Active);
+    // set_view must push a fresh, filtered snapshot without a dispatch().
+    assert_eq!(*received.lock().unwrap(), vec![1, 0]);
+}
+
+#[test]
 fn corrupt_peer_id_blob_is_storage_error() {
     let dir = TempDir::new().unwrap();
     let path = db_path(&dir, "todo.sqlite3");

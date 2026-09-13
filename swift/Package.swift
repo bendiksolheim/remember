@@ -26,9 +26,12 @@ let package = Package(
         ),
         .target(name: "TodoUI", dependencies: ["TodoKit"]),
         .target(name: "TodoApp", dependencies: ["TodoUI"]),
-        // TodoKit isn't just transitive here: TodoMacApp.swift constructs
+        // TodoKit isn't just transitive here: AppDelegate.swift constructs
         // TodoModel directly, and SwiftPM requires importing a module to be
         // a direct dependency of the target, not just of one of its deps.
-        .executableTarget(name: "TodoMac", dependencies: ["TodoUI", "TodoKit"]),
+        // TodoMac no longer depends on TodoUI: the Spotlight-style panel is
+        // its own Mac-only UI (CaptureView.swift), and TaskListView/
+        // TaskDetailView remain in use only by TodoApp (iOS).
+        .executableTarget(name: "TodoMac", dependencies: ["TodoKit"]),
     ]
 )
