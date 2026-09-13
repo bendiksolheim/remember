@@ -8,11 +8,11 @@ import TodoKit
 // qualified explicitly rather than trusting contextual resolution --
 // unverified since there's no compiler in this container.
 
-/// The entire macOS UI for v1: a quick-add field plus the live incomplete
-/// task list, hosted inside `SpotlightPanel`. Editing, deleting, and
-/// reordering are out of scope here -- those remain reachable only via
-/// `TodoUI`'s `TaskListView`, which iOS still uses but this target no
-/// longer wires up.
+/// The entire macOS UI for v1: a quick-add field, the live incomplete task
+/// list, and inline title editing ("e" on the focused row), hosted inside
+/// `SpotlightPanel`. Deleting and reordering are still out of scope here --
+/// those remain reachable only via `TodoUI`'s `TaskListView`, which iOS
+/// still uses but this target no longer wires up.
 struct CaptureView: SwiftUI.View {
     @Environment(TodoModel.self) private var model
     var onDismiss: () -> Void
@@ -26,12 +26,21 @@ struct CaptureView: SwiftUI.View {
     @State private var input = ""
     /// Unifies the quick-add field and every row into one keyboard-focus
     /// chain: alt+j/alt+k walk `focusChain` (input first, then rows in
-    /// display order) and wrap at both ends.
-    private enum FocusTarget: Hashable {
+    /// display order) and wrap at both ends. `fileprivate`, not `private`,
+    /// so `CaptureTaskRow` below (a sibling type, not an extension of this
+    /// one) can name it in its own `FocusState<...>.Binding` parameter.
+    fileprivate enum FocusTarget: Hashable {
         case input
         case row(String)
+        case editingRow(String)
     }
     @FocusState private var focus: FocusTarget?
+    /// Id of the row currently in inline-edit mode, and its draft text.
+    /// `nil` means no row is being edited. Centralized here (not per-row
+    /// local state) so the alt+j/alt+k monitor and the "e" shortcut's
+    /// `.disabled` gate can both read/drive it directly.
+    @State private var editingRowID: String?
+    @State private var editText = ""
     /// Rows that were just checked off, held here (not in `model.snapshot`,
     /// which already excludes them once `View.active` is set) so they can
     /// visibly linger for ~3s instead of vanishing the instant they're
@@ -87,8 +96,13 @@ struct CaptureView: SwiftUI.View {
                                 row: entry.row,
                                 completed: entry.completed,
                                 isFocused: focus == .row(entry.row.id),
+                                isEditing: editingRowID == entry.row.id,
+                                editText: $editText,
+                                focus: $focus,
                                 onToggle: { toggle(id: entry.row.id) },
-                                onFocusRequest: { focus = .row(entry.row.id) }
+                                onFocusRequest: { focus = .row(entry.row.id) },
+                                onCommitEdit: commitEdit,
+                                onCancelEdit: cancelEdit
                             )
                             .focusable()
                             .focusEffectDisabled()
@@ -115,6 +129,17 @@ struct CaptureView: SwiftUI.View {
             onContentHeightChange(newValue)
         }
         .onChange(of: model.snapshot?.revision) { _, _ in reconcileRevivedGhosts() }
+        .onChange(of: focus) { oldValue, _ in
+            // Focus left the edit field for a reason other than our own
+            // commitEdit()/cancelEdit() (both clear `editingRowID` before
+            // moving focus themselves, so this guard is already false by
+            // then) -- e.g. the panel lost key window status, or the user
+            // clicked elsewhere. Discard the in-progress edit rather than
+            // silently keep it alive.
+            guard case .editingRow(let id)? = oldValue, editingRowID == id else { return }
+            editingRowID = nil
+            editText = ""
+        }
         .overlay {
             // Hidden buttons rather than a raw NSEvent monitor: SwiftUI's
             // `.keyboardShortcut` is honored by NSHostingView's own
@@ -130,10 +155,20 @@ struct CaptureView: SwiftUI.View {
                     .keyboardShortcut("z", modifiers: [.command, .shift])
                 // Bare Space with no modifier would otherwise swallow the
                 // spacebar while the quick-add field is focused, so this is
-                // disabled whenever focus isn't on a row.
+                // disabled whenever focus isn't on a row. Same reasoning
+                // keeps it disabled while a row is being edited (`isRowFocused`
+                // is false for `.editingRow`), so Space types into the field
+                // instead of toggling completion.
                 Button("Toggle Focused") { toggleFocusedRow() }
                     .keyboardShortcut(.space, modifiers: [])
                     .disabled(!isRowFocused)
+                // Bare "e" enters inline editing on the focused row. Disabled
+                // for completed/ghost rows -- renaming a task that's done (or
+                // mid-fade-out) isn't meaningful -- and naturally inert while
+                // the quick-add field or another edit field has focus.
+                Button("Edit Focused") { beginEditFocusedRow() }
+                    .keyboardShortcut("e", modifiers: [])
+                    .disabled(!canEditFocusedRow)
             }
             .hidden()
         }
@@ -147,10 +182,14 @@ struct CaptureView: SwiftUI.View {
             }
             switch event.charactersIgnoringModifiers {
             case "j":
-                moveFocus(by: 1)
+                // Still swallowed (returns nil) while editing, not just
+                // skipped -- letting the event through would have AppKit
+                // insert its dead-key/accented character into the field
+                // being edited instead of doing nothing.
+                if editingRowID == nil { moveFocus(by: 1) }
                 return nil
             case "k":
-                moveFocus(by: -1)
+                if editingRowID == nil { moveFocus(by: -1) }
                 return nil
             default:
                 return event
@@ -188,6 +227,54 @@ struct CaptureView: SwiftUI.View {
     private func toggleFocusedRow() {
         guard case .row(let id)? = focus else { return }
         toggle(id: id)
+    }
+
+    private var canEditFocusedRow: Bool {
+        guard case .row(let id)? = focus,
+            let entry = displayRows.first(where: { $0.row.id == id })
+        else { return false }
+        return !entry.row.done
+    }
+
+    private func beginEditFocusedRow() {
+        guard case .row(let id)? = focus,
+            let entry = displayRows.first(where: { $0.row.id == id })
+        else { return }
+        editingRowID = id
+        editText = entry.row.title
+        focus = .editingRow(id)
+    }
+
+    /// Enter finalizes: dispatches the draft unconditionally. `SetTitle`
+    /// trims and no-ops on an empty result itself (see todo-core), so an
+    /// emptied title just silently reverts -- no client-side empty check
+    /// needed here.
+    private func commitEdit() {
+        guard let id = editingRowID else { return }
+        model.dispatch(.setTitle(id: id, title: editText))
+        endEdit(returnFocusTo: id)
+    }
+
+    /// Escape cancels: drop the draft, dispatch nothing.
+    private func cancelEdit() {
+        guard let id = editingRowID else { return }
+        endEdit(returnFocusTo: id)
+    }
+
+    /// Leaves edit mode and hands focus back to the row. The `focus`
+    /// reassignment is deferred a run-loop turn: clearing `editingRowID`
+    /// swaps the edit `TextField` back out for a plain `Text` in the same
+    /// update, and that field is what currently holds `focus` -- setting
+    /// `focus` to `.row(id)` in that same synchronous pass loses the race
+    /// against SwiftUI's own "the focused view just disappeared" reset,
+    /// which clears focus to nil *after* our assignment lands. Letting the
+    /// removal commit first, then reassigning focus, avoids that.
+    private func endEdit(returnFocusTo id: String) {
+        editingRowID = nil
+        editText = ""
+        DispatchQueue.main.async {
+            focus = .row(id)
+        }
     }
 
     /// Active rows in their natural order, with each ghost reinserted right
@@ -228,9 +315,7 @@ struct CaptureView: SwiftUI.View {
     }
 
     private func addTask() {
-        let title = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty else { return }
-        model.dispatch(.add(title: title, after: nil))
+        model.dispatch(.add(title: input, after: nil))
         input = ""
     }
 
@@ -311,8 +396,13 @@ private struct CaptureTaskRow: SwiftUI.View {
     let row: TaskRow
     let completed: Bool
     let isFocused: Bool
+    let isEditing: Bool
+    @Binding var editText: String
+    var focus: FocusState<CaptureView.FocusTarget?>.Binding
     let onToggle: () -> Void
     let onFocusRequest: () -> Void
+    let onCommitEdit: () -> Void
+    let onCancelEdit: () -> Void
 
     var body: some SwiftUI.View {
         HStack(spacing: 10) {
@@ -325,10 +415,22 @@ private struct CaptureTaskRow: SwiftUI.View {
             // .focusable() at the call site) is the single focus target,
             // so this doesn't compete with it for Tab/alt+j/alt+k.
             .focusable(false)
+            // Toggling completion mid-edit would immediately ghost the row
+            // whose title is being typed into -- block it until the edit
+            // finishes.
+            .disabled(isEditing)
 
-            Text(row.title)
-                .strikethrough(completed)
-                .foregroundStyle(completed ? .secondary : .primary)
+            if isEditing {
+                TextField("", text: $editText)
+                    .textFieldStyle(.plain)
+                    .focused(focus, equals: .editingRow(row.id))
+                    .onSubmit(onCommitEdit)
+                    .onExitCommand(perform: onCancelEdit)
+            } else {
+                Text(row.title)
+                    .strikethrough(completed)
+                    .foregroundStyle(completed ? .secondary : .primary)
+            }
 
             Spacer()
         }

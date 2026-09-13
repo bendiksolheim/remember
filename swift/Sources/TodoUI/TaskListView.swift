@@ -65,7 +65,6 @@ public struct TaskListView: SwiftUI.View {
     }
 
     private func addTask() {
-        guard !newTitle.isEmpty else { return }
         model.dispatch(.add(title: newTitle, after: nil))
         newTitle = ""
     }
