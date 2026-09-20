@@ -9,7 +9,7 @@
 
 use std::cmp::Ordering;
 
-use loro::{ExportMode, LoroDoc, LoroMap, LoroMovableList, LoroValue, UndoManager};
+use loro::{ExportMode, LoroDoc, LoroMap, LoroMovableList, LoroValue, UndoManager, VersionVector};
 
 use crate::clock::{Clock, IdSource};
 use crate::command::{Command, ViewFilter};
@@ -44,6 +44,13 @@ fn as_i64(value: &LoroValue) -> Option<i64> {
     match value {
         LoroValue::I64(n) => Some(*n),
         _ => None,
+    }
+}
+
+fn decode_vv(bytes: Option<&[u8]>) -> Result<VersionVector, CoreError> {
+    match bytes {
+        Some(b) => VersionVector::decode(b).map_err(doc_err),
+        None => Ok(VersionVector::new()),
     }
 }
 
@@ -84,11 +91,10 @@ impl Doc {
         self.doc.export(ExportMode::snapshot()).map_err(doc_err)
     }
 
-    /// Full-history update export. A minimal stand-in for the
-    /// version-vector-scoped `export_updates_since` that Phase 11's sync
-    /// seam calls for — the Phase 5 property tests need *a* merge pathway
-    /// now; incremental scoping is a sync-efficiency concern, not a
-    /// convergence one, so it's deferred to Phase 11.
+    /// Full-history update export. Used by the property tests, which want
+    /// unconditional convergence regardless of what either side has already
+    /// seen. Sync uses [`Doc::export_since`] instead, which is scoped to
+    /// what actually changed.
     pub fn export_updates(&self) -> Result<Vec<u8>, CoreError> {
         self.doc.export(ExportMode::all_updates()).map_err(doc_err)
     }
@@ -98,6 +104,35 @@ impl Doc {
     pub fn import_updates(&mut self, bytes: &[u8]) -> Result<(), CoreError> {
         self.doc.import(bytes).map_err(doc_err)?;
         Ok(())
+    }
+
+    /// This doc's current version vector, encoded. Opaque outside this
+    /// module — callers persist it and hand it back to [`Doc::export_since`]
+    /// later; nothing outside `doc.rs` interprets its contents.
+    pub fn version_vector_bytes(&self) -> Vec<u8> {
+        self.doc.oplog_vv().encode()
+    }
+
+    /// Incremental update export: everything since `since`, not the full
+    /// history. `since` is a previously-returned [`Doc::version_vector_bytes`]
+    /// result, or `None` to mean "this peer has never exported before" (i.e.
+    /// export everything). This is the sync seam `export_updates`'s doc
+    /// comment used to call out as deferred — pushes now cost proportional
+    /// to what changed, not to total history.
+    pub fn export_since(&self, since: Option<&[u8]>) -> Result<Vec<u8>, CoreError> {
+        let vv = decode_vv(since)?;
+        self.doc.export(ExportMode::updates(&vv)).map_err(doc_err)
+    }
+
+    /// Whether anything has happened since `since` (a previous
+    /// [`Doc::version_vector_bytes`] result, or `None` for genesis). An
+    /// export's *byte length* can't answer this — Loro's update encoding
+    /// has a small fixed overhead even when there are zero new ops — so the
+    /// sync layer uses this instead to decide whether a push is worth
+    /// making at all.
+    pub fn has_changes_since(&self, since: Option<&[u8]>) -> Result<bool, CoreError> {
+        let baseline = decode_vv(since)?;
+        Ok(!baseline.includes_vv(&self.doc.oplog_vv()))
     }
 
     /// Number of tasks in the `tasks` map. Exposed only so property tests
@@ -409,5 +444,136 @@ mod tests {
         let snap = doc.read(ViewFilter::All, &FixedClock(0));
         assert_eq!(snap.rows.len(), 1);
         assert!(!snap.rows[0].done);
+    }
+
+    #[test]
+    fn export_since_none_exports_full_history() {
+        let mut doc = Doc::new(1).unwrap();
+        doc.apply(
+            Command::Add {
+                title: "a".to_string(),
+                after: None,
+            },
+            &FixedClock(0),
+            &crate::clock::SeqIdSource::new(),
+        )
+        .unwrap();
+
+        let bytes = doc.export_since(None).unwrap();
+
+        let mut other = Doc::new(2).unwrap();
+        other.import_updates(&bytes).unwrap();
+        assert_eq!(other.task_count(), 1);
+        assert_eq!(other.order_len(), 1);
+    }
+
+    #[test]
+    fn export_since_current_vv_is_empty_delta() {
+        let mut doc = Doc::new(1).unwrap();
+        doc.apply(
+            Command::Add {
+                title: "a".to_string(),
+                after: None,
+            },
+            &FixedClock(0),
+            &crate::clock::SeqIdSource::new(),
+        )
+        .unwrap();
+
+        let vv = doc.version_vector_bytes();
+        let bytes = doc.export_since(Some(&vv)).unwrap();
+
+        // Nothing new since `vv` — importing it into a fresh doc adds no
+        // tasks, proving the export was scoped rather than falling back to
+        // full history.
+        let mut other = Doc::new(2).unwrap();
+        other.import_updates(&bytes).unwrap();
+        assert_eq!(other.task_count(), 0);
+    }
+
+    #[test]
+    fn export_since_only_includes_changes_after_the_given_vv() {
+        let mut doc = Doc::new(1).unwrap();
+        let ids = crate::clock::SeqIdSource::new();
+        doc.apply(
+            Command::Add {
+                title: "a".to_string(),
+                after: None,
+            },
+            &FixedClock(0),
+            &ids,
+        )
+        .unwrap();
+        let vv_after_first = doc.version_vector_bytes();
+        let base = doc.export_since(None).unwrap(); // full state as of "a" alone
+
+        doc.apply(
+            Command::Add {
+                title: "b".to_string(),
+                after: None,
+            },
+            &FixedClock(0),
+            &ids,
+        )
+        .unwrap();
+
+        let delta = doc.export_since(Some(&vv_after_first)).unwrap();
+        let full = doc.export_since(None).unwrap();
+        // The delta is strictly smaller than a full re-export of the same
+        // final state — proof it's scoped to what's new, not a redundant
+        // copy of everything.
+        assert!(delta.len() < full.len());
+
+        // Applied on top of the state it was scoped against, the delta
+        // reconstructs the full document.
+        let mut other = Doc::new(2).unwrap();
+        other.import_updates(&base).unwrap();
+        assert_eq!(other.task_count(), 1);
+        other.import_updates(&delta).unwrap();
+        assert_eq!(other.task_count(), 2);
+    }
+
+    #[test]
+    fn has_changes_since_none_is_true_once_anything_happened() {
+        let doc = Doc::new(1).unwrap();
+        assert!(!doc.has_changes_since(None).unwrap());
+    }
+
+    #[test]
+    fn has_changes_since_current_vv_is_false() {
+        let mut doc = Doc::new(1).unwrap();
+        doc.apply(
+            Command::Add {
+                title: "a".to_string(),
+                after: None,
+            },
+            &FixedClock(0),
+            &crate::clock::SeqIdSource::new(),
+        )
+        .unwrap();
+
+        assert!(doc.has_changes_since(None).unwrap());
+        let vv = doc.version_vector_bytes();
+        assert!(!doc.has_changes_since(Some(&vv)).unwrap());
+    }
+
+    #[test]
+    fn has_changes_since_rejects_garbage_vv_bytes() {
+        let doc = Doc::new(1).unwrap();
+        let err = doc
+            .has_changes_since(Some(b"not a version vector"))
+            .err()
+            .unwrap();
+        assert!(matches!(err, CoreError::Document(_)));
+    }
+
+    #[test]
+    fn export_since_rejects_garbage_vv_bytes() {
+        let doc = Doc::new(1).unwrap();
+        let err = doc
+            .export_since(Some(b"not a version vector"))
+            .err()
+            .unwrap();
+        assert!(matches!(err, CoreError::Document(_)));
     }
 }

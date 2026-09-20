@@ -77,6 +77,66 @@ impl Store {
         Ok(id)
     }
 
+    /// The Loro version vector (encoded) as of the last successful sync
+    /// push, i.e. "what the server already has from this device". `None`
+    /// means this device has never pushed — the next push should export the
+    /// full local history.
+    pub fn load_pushed_vv(&self) -> Result<Option<Vec<u8>>, CoreError> {
+        self.lock()
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'pushed_vv'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(store_err)
+    }
+
+    pub fn save_pushed_vv(&self, vv: &[u8]) -> Result<(), CoreError> {
+        self.lock()
+            .execute(
+                "INSERT INTO meta (key, value) VALUES ('pushed_vv', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (vv,),
+            )
+            .map_err(store_err)?;
+        Ok(())
+    }
+
+    /// The server's log cursor as of the last successful pull, i.e. "the
+    /// highest `seq` this device has already imported". `None` means this
+    /// device has never pulled — the next pull should start from the
+    /// beginning of the account's log.
+    pub fn load_pulled_seq(&self) -> Result<Option<i64>, CoreError> {
+        let bytes: Option<Vec<u8>> = self
+            .lock()
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'pulled_seq'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(store_err)?;
+        let Some(bytes) = bytes else {
+            return Ok(None);
+        };
+        let arr: [u8; 8] = bytes
+            .try_into()
+            .map_err(|_| CoreError::Storage("corrupt pulled_seq in meta table".to_string()))?;
+        Ok(Some(i64::from_le_bytes(arr)))
+    }
+
+    pub fn save_pulled_seq(&self, seq: i64) -> Result<(), CoreError> {
+        self.lock()
+            .execute(
+                "INSERT INTO meta (key, value) VALUES ('pulled_seq', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (seq.to_le_bytes().to_vec(),),
+            )
+            .map_err(store_err)?;
+        Ok(())
+    }
+
     pub fn load_snapshot(&self) -> Result<Option<Vec<u8>>, CoreError> {
         self.lock()
             .query_row("SELECT snapshot FROM doc WHERE id = 1", [], |row| {

@@ -1,7 +1,7 @@
 //! All conversions between `todo-core` types and their UniFFI mirrors.
 //! Plain functions, no decisions — covered at 100%.
 
-use crate::{AppError, Command, Snapshot, TaskRow, View};
+use crate::{AppError, Command, Session, Snapshot, SyncError, SyncOutcome, TaskRow, View};
 
 pub fn command_to_core(command: Command) -> todo_core::Command {
     match command {
@@ -61,6 +61,31 @@ pub fn app_error_from_core(error: todo_core::CoreError) -> AppError {
         todo_core::CoreError::Storage(message) => AppError::Storage { message },
         todo_core::CoreError::Document(message) => AppError::Document { message },
         todo_core::CoreError::NotFound(message) => AppError::NotFound { message },
+    }
+}
+
+pub fn session_from_sync(session: todo_sync::Session) -> Session {
+    Session {
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+        user_id: session.user_id,
+    }
+}
+
+pub fn sync_outcome_from_core(outcome: todo_sync::SyncOutcome) -> SyncOutcome {
+    SyncOutcome {
+        pulled: outcome.pulled as u64,
+        pushed_bytes: outcome.pushed_bytes as u64,
+    }
+}
+
+pub fn sync_error_from_core(error: todo_sync::SyncError) -> SyncError {
+    match error {
+        todo_sync::SyncError::Transport(message) => SyncError::Transport { message },
+        todo_sync::SyncError::Auth(message) => SyncError::Auth { message },
+        todo_sync::SyncError::Core(core_error) => SyncError::Core {
+            message: core_error.to_string(),
+        },
     }
 }
 
@@ -239,6 +264,46 @@ mod tests {
         assert!(matches!(
             app_error_from_core(todo_core::CoreError::NotFound("n".to_string())),
             AppError::NotFound { message } if message == "n"
+        ));
+    }
+
+    #[test]
+    fn session_converts_all_fields() {
+        let session = session_from_sync(todo_sync::Session {
+            access_token: "a".to_string(),
+            refresh_token: "r".to_string(),
+            user_id: "u".to_string(),
+        });
+        assert_eq!(session.access_token, "a");
+        assert_eq!(session.refresh_token, "r");
+        assert_eq!(session.user_id, "u");
+    }
+
+    #[test]
+    fn sync_outcome_converts_and_widens_to_u64() {
+        let outcome = sync_outcome_from_core(todo_sync::SyncOutcome {
+            pulled: 3,
+            pushed_bytes: 128,
+        });
+        assert_eq!(outcome.pulled, 3);
+        assert_eq!(outcome.pushed_bytes, 128);
+    }
+
+    #[test]
+    fn sync_error_variants_map_preserving_message() {
+        assert!(matches!(
+            sync_error_from_core(todo_sync::SyncError::Transport("t".to_string())),
+            SyncError::Transport { message } if message == "t"
+        ));
+        assert!(matches!(
+            sync_error_from_core(todo_sync::SyncError::Auth("a".to_string())),
+            SyncError::Auth { message } if message == "a"
+        ));
+        assert!(matches!(
+            sync_error_from_core(todo_sync::SyncError::Core(todo_core::CoreError::NotFound(
+                "n".to_string()
+            ))),
+            SyncError::Core { message } if message.contains('n')
         ));
     }
 }

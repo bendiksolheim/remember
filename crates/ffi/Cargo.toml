@@ -15,6 +15,7 @@ required-features = ["cli"]
 [dependencies]
 thiserror = "2.0.20"
 todo-core = { version = "0.1.0", path = "../core" }
+todo-sync = { version = "0.1.0", path = "../sync" }
 uniffi = { version = "0.32.0" }
 
 [features]

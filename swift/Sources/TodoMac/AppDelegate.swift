@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
     private var panel: SpotlightPanel!
     private var hotKey: GlobalHotKey?
     private var statusItem: NSStatusItem?
+    private var settingsWindowController: SettingsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let bundleID = Bundle.main.bundleIdentifier ?? ""
@@ -21,7 +22,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
 
         NSApp.setActivationPolicy(.accessory)
 
-        model = try! TodoModel()
+        // Bare project URL, no path — `todo-sync`'s `HttpTransport`/`AuthClient`
+        // append `/rest/v1/...` and `/auth/v1/...` themselves.
+        model = try! TodoModel(
+            supabaseURL: "https://xzmbkeeaycyaluadzxhe.supabase.co",
+            supabaseAnonKey: "sb_publishable_xRie_YdgGu7lS0ozQzYeUg_Ww0Ek7mE"
+        )
         // Set once here rather than relying on CaptureView's onAppear:
         // the panel's SwiftUI content exists (and can start reacting to
         // model changes) well before it's ever ordered on screen, so
@@ -53,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
 
         setUpStatusItem()
         registerLoginItemIfNeeded()
+        observeSyncTriggers()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -79,6 +86,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
         // or deactivating whatever app was previously frontmost, so there's
         // nothing to restore when the panel goes away again.
         panel.makeKeyAndOrderFront(nil)
+        // The closest thing this app has to "came to the foreground" --
+        // it's a hotkey-driven accessory app with no normal window, so
+        // `NSApplication.didBecomeActiveNotification` (handled separately,
+        // for the settings window) rarely fires from this interaction path
+        // at all. The user just showed up; don't make them wait for the
+        // periodic fallback to find out what changed elsewhere.
+        model.syncSoon()
     }
 
     private func hide() {
@@ -89,17 +103,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
         hide()
     }
 
-    // MARK: - Menu bar (Quit only for v1 -- see plan's "menu bar contents" decision)
+    // MARK: - Menu bar
 
     private func setUpStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: "checklist", accessibilityDescription: "Todo")
 
         let menu = NSMenu()
+        let syncItem = NSMenuItem(title: "Sync…", action: #selector(showSyncSettings), keyEquivalent: ",")
+        syncItem.target = self
+        menu.addItem(syncItem)
+        menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         item.menu = menu
 
         statusItem = item
+    }
+
+    @objc private func showSyncSettings() {
+        if settingsWindowController == nil {
+            settingsWindowController = SettingsWindowController(model: model)
+        }
+        settingsWindowController?.show()
+    }
+
+    // MARK: - Sync triggers
+
+    /// Two platform lifecycle events worth an immediate sync attempt
+    /// beyond the debounce-after-edit/periodic-fallback the coordinator
+    /// already runs on its own: the Mac waking from sleep (the most likely
+    /// moment for a long stretch of missed changes from other devices to
+    /// have piled up), and this app itself becoming active (covers the
+    /// settings window activating it -- `show()` above covers the far more
+    /// common hotkey-driven path separately, since that one deliberately
+    /// never activates the app).
+    private func observeSyncTriggers() {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in self?.model.syncSoon() }
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in self?.model.syncSoon() }
+        }
     }
 
     // MARK: - Login item

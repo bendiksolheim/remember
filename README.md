@@ -4,9 +4,11 @@ A local-first todo app for macOS and iOS. Rust owns all logic and state; Swift
 only draws pixels. There is no Xcode project — `cargo xtask` drives the whole
 build.
 
-The full design spec and phase-by-phase build history live in
-[`plans/PLAN.md`](plans/PLAN.md). This file is the practical "how do I build
-and run this" reference; PLAN.md is the "why does it work this way" one.
+This file is the practical "how do I build and run this" reference. There is
+no longer a standing design-spec document (`plans/PLAN.md` was retired once
+the initial build was done) — architecture decisions since then are captured
+in code comments at the point they matter, plus [`supabase/README.md`](supabase/README.md)
+for the sync backend specifically.
 
 ## Architecture
 
@@ -47,6 +49,13 @@ and run this" reference; PLAN.md is the "why does it work this way" one.
     the next thing to fix.
 - **`apple/`** — `Info.plist` sources and the app icon. Bundle ID:
   `no.bendik.todo`.
+- **`crates/sync` (`todo-sync`)** — device sync: pushes/pulls Loro
+  update-blobs to/from a Supabase project over `reqwest::blocking`, plus
+  auth (`AuthClient`) and orchestration (`SyncEngine`). Opt-in — the app
+  works fully with no backend configured. See
+  [`supabase/README.md`](supabase/README.md) for standing up the backend
+  this crate talks to, and [`supabase/schema.sql`](supabase/schema.sql) for
+  the actual table/RLS definitions.
 
 ### Why Rust *and* Swift
 
@@ -133,9 +142,10 @@ Add anything reported as a `.linkedLibrary(...)` entry in `swift/Package.swift`.
   `tests/snapshots.rs` (`insta`, reviewed by hand, not just accepted),
   and `tests/persistence.rs` (SQLite round-trips, using `tempfile` — never a
   real user path).
-- `todo-core` is held to 100% line coverage in policy (see `plans/PLAN.md`
-  Appendix A for the exact rules and the couple of narrow, deliberate file
-  exclusions). The gate in `xtask` actually checks `--fail-under-lines 99`,
+- `todo-core` is held to 100% line coverage in policy (see `CLAUDE.md` for
+  the rule and the couple of narrow, deliberate file exclusions in
+  `crates/xtask/src/main.rs`'s `cov()`). The gate in `xtask` actually checks
+  `--fail-under-lines 99`,
   not 100 — a `cargo-llvm-cov` reporting quirk in one environment makes a
   couple of lines show as "missed" even though the HTML report, LCOV export,
   and manual inspection all confirm they run; see the comment on `cov()` in
@@ -147,9 +157,9 @@ Add anything reported as a `.linkedLibrary(...)` entry in `swift/Package.swift`.
   testing against the core crate. Not part of the CI gate (slow); worth
   rerunning whenever `doc.rs` or the date-formatting code changes
   substantially.
-- Swift has no automated tests by design — see PLAN.md's Phase 9 notes.
-  If a Swift bug ever turns out to be a logic bug, that logic was in the
-  wrong language; move it to `todo-core` and cover it there.
+- Swift has no automated tests by design. If a Swift bug ever turns out to
+  be a logic bug, that logic was in the wrong language; move it to
+  `todo-core` and cover it there.
 
 ## Data & persistence
 
@@ -186,7 +196,7 @@ GUI uses) — not "to position `m`".
 
 ## Out of scope (v1)
 
-Sync, sharing, encryption, recurring tasks, tags, projects, notifications,
-and widgets are all deliberately not implemented. A future sync seam (a
-`SyncTransport` trait, defined but unimplemented) is planned but not yet
-built — see PLAN.md Phase 11.
+Sharing, end-to-end encryption, recurring tasks, tags, projects,
+notifications, and widgets are all deliberately not implemented. Device sync
+exists (`crates/sync`, see above) but is plaintext-at-rest and single-owner
+only — no collaboration/shared lists.

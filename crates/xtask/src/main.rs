@@ -302,6 +302,8 @@ fn cov() -> Result<()> {
         "--package",
         "todo-core",
         "--package",
+        "todo-sync",
+        "--package",
         "todo-ffi",
         "--package",
         "todo-cli",

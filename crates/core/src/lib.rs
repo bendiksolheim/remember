@@ -54,6 +54,7 @@ struct Shared {
     dirty_since: Mutex<Option<Instant>>,
     shutdown: AtomicBool,
     listeners: Mutex<Vec<Listener>>,
+    peer_id: u64,
 }
 
 impl Shared {
@@ -90,6 +91,7 @@ impl App {
             dirty_since: Mutex::new(None),
             shutdown: AtomicBool::new(false),
             listeners: Mutex::new(Vec::new()),
+            peer_id,
         });
 
         let writer_shared = Arc::clone(&shared);
@@ -155,6 +157,64 @@ impl App {
         self.shared.flush_now()?;
         *lock(&self.shared.dirty_since) = None;
         Ok(())
+    }
+
+    /// Stable for the life of this install — see [`Store::peer_id`].
+    /// Exposed so a sync layer can tag pushed rows with their origin
+    /// device.
+    pub fn peer_id(&self) -> u64 {
+        self.shared.peer_id
+    }
+
+    /// Whether there's anything worth pushing. A sync layer should check
+    /// this before calling [`App::export_for_push`] — an export's byte
+    /// length can't tell you "nothing changed" (see
+    /// [`crate::Doc::has_changes_since`]), so this is the real check.
+    pub fn has_unpushed_changes(&self) -> Result<bool, CoreError> {
+        let since = self.shared.store.load_pushed_vv()?;
+        lock(&self.shared.state)
+            .doc
+            .has_changes_since(since.as_deref())
+    }
+
+    /// Bytes to push for a sync round: everything since the last
+    /// successful push (or the full history, on this device's first ever
+    /// push). Does not itself advance the pushed cursor — call
+    /// [`App::mark_pushed`] once the caller has confirmed the server
+    /// accepted these bytes, so a failed push is safely retried as-is.
+    pub fn export_for_push(&self) -> Result<Vec<u8>, CoreError> {
+        let since = self.shared.store.load_pushed_vv()?;
+        lock(&self.shared.state).doc.export_since(since.as_deref())
+    }
+
+    /// Records the current version vector as "already pushed". Call only
+    /// after the sync transport confirms the bytes from
+    /// [`App::export_for_push`] were accepted.
+    pub fn mark_pushed(&self) -> Result<(), CoreError> {
+        let vv = lock(&self.shared.state).doc.version_vector_bytes();
+        self.shared.store.save_pushed_vv(&vv)
+    }
+
+    /// Merges bytes pulled from sync into this doc, then flushes and
+    /// notifies subscribers the same way a local [`App::dispatch`] does —
+    /// pulled changes should look identical to the UI as local edits.
+    pub fn import_from_pull(&self, bytes: &[u8]) -> Result<(), CoreError> {
+        lock(&self.shared.state).doc.import_updates(bytes)?;
+        *lock(&self.shared.dirty_since) = Some(Instant::now());
+        self.notify();
+        Ok(())
+    }
+
+    /// The server log cursor as of the last successful pull. `None` means
+    /// this device has never pulled — the caller should fetch from the
+    /// start of the account's log.
+    pub fn last_pulled_seq(&self) -> Result<Option<i64>, CoreError> {
+        self.shared.store.load_pulled_seq()
+    }
+
+    /// Records `seq` as the last row this device has imported.
+    pub fn mark_pulled(&self, seq: i64) -> Result<(), CoreError> {
+        self.shared.store.save_pulled_seq(seq)
     }
 }
 

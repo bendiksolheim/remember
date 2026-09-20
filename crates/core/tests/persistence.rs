@@ -198,6 +198,58 @@ fn corrupt_peer_id_blob_is_storage_error() {
 }
 
 #[test]
+fn fresh_store_has_no_sync_cursors() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::open(&db_path(&dir, "todo.sqlite3")).unwrap();
+    assert_eq!(store.load_pushed_vv().unwrap(), None);
+    assert_eq!(store.load_pulled_seq().unwrap(), None);
+}
+
+#[test]
+fn pushed_vv_round_trips_and_can_be_overwritten() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::open(&db_path(&dir, "todo.sqlite3")).unwrap();
+
+    store.save_pushed_vv(b"first").unwrap();
+    assert_eq!(store.load_pushed_vv().unwrap(), Some(b"first".to_vec()));
+
+    store.save_pushed_vv(b"second").unwrap();
+    assert_eq!(store.load_pushed_vv().unwrap(), Some(b"second".to_vec()));
+}
+
+#[test]
+fn pulled_seq_round_trips_and_can_be_overwritten() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::open(&db_path(&dir, "todo.sqlite3")).unwrap();
+
+    store.save_pulled_seq(7).unwrap();
+    assert_eq!(store.load_pulled_seq().unwrap(), Some(7));
+
+    store.save_pulled_seq(8).unwrap();
+    assert_eq!(store.load_pulled_seq().unwrap(), Some(8));
+}
+
+#[test]
+fn corrupt_pulled_seq_blob_is_storage_error() {
+    let dir = TempDir::new().unwrap();
+    let path = db_path(&dir, "todo.sqlite3");
+    {
+        let _store = Store::open(&path).unwrap();
+    }
+
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES ('pulled_seq', ?1)",
+        (b"short".to_vec(),), // not 8 bytes
+    )
+    .unwrap();
+    drop(conn);
+
+    let err = Store::open(&path).unwrap().load_pulled_seq().err().unwrap();
+    assert!(matches!(err, CoreError::Storage(_)));
+}
+
+#[test]
 fn subscribe_fires_immediately_then_on_every_dispatch() {
     let dir = TempDir::new().unwrap();
     let app = App::open(&db_path(&dir, "todo.sqlite3")).unwrap();
