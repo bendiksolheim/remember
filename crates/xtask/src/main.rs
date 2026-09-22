@@ -16,11 +16,12 @@ fn main() -> Result<()> {
         Some("run") => run(),
         Some("sim") => sim(),
         Some("device") => device(),
+        Some("package") => package(&rest),
         Some("test") => test(),
         Some("cov") => cov(),
         Some("ci") => ci(),
         Some(other) => bail!("unknown xtask command: {other}"),
-        None => bail!("usage: cargo xtask <bindings|build|mac|run|sim|device|test|cov|ci>"),
+        None => bail!("usage: cargo xtask <bindings|build|mac|run|sim|device|package|test|cov|ci>"),
     }
 }
 
@@ -283,6 +284,67 @@ fn device() -> Result<()> {
             .current_dir(meta.workspace_root.join("swift")),
     )?;
     Ok(())
+}
+
+/// `mac`, then archive the signed `.app` into a release zip and print its
+/// path and sha256 (one line each), for CI to read back when cutting a
+/// GitHub Release / updating the Cask.
+fn package(args: &[String]) -> Result<()> {
+    require_macos("package")?;
+    let version = parse_version_flag(args)?;
+    let meta = cargo_metadata()?;
+
+    mac()?;
+
+    let app_path = meta.workspace_root.join("build/Todo.app");
+    let zip_path = meta
+        .workspace_root
+        .join("build")
+        .join(format!("Todo-{version}-macos-arm64.zip"));
+
+    // `ditto`, not `zip`/`tar` — it's the Apple-blessed way to archive a
+    // signed `.app` without corrupting the code signature or resource forks.
+    run_cmd(
+        Command::new("ditto")
+            .args(["-c", "-k", "--sequesterRsrc", "--keepParent"])
+            .arg(&app_path)
+            .arg(&zip_path),
+    )?;
+
+    let output = Command::new("shasum")
+        .args(["-a", "256"])
+        .arg(&zip_path)
+        .output()
+        .context("failed to spawn shasum")?;
+    if !output.status.success() {
+        bail!("shasum failed");
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let sha256 = stdout
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| anyhow!("unexpected shasum output: {stdout}"))?;
+
+    println!("{}", zip_path.display());
+    println!("{sha256}");
+
+    Ok(())
+}
+
+fn parse_version_flag(args: &[String]) -> Result<String> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if let Some(value) = arg.strip_prefix("--version=") {
+            return Ok(value.to_string());
+        }
+        if arg == "--version" {
+            return iter
+                .next()
+                .cloned()
+                .ok_or_else(|| anyhow!("--version requires a value"));
+        }
+    }
+    bail!("usage: cargo xtask package --version <x>")
 }
 
 fn test() -> Result<()> {

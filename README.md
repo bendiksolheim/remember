@@ -95,6 +95,7 @@ Everything goes through `cargo xtask`, aliased in `.cargo/config.toml`:
 | `cargo xtask run` | `mac`, then `open build/Todo.app` |
 | `cargo xtask sim` | Builds for the iOS Simulator target, then `xtool dev --simulator` |
 | `cargo xtask device` | Builds for the iOS device target, then `xtool dev` (installs on a connected/paired device) |
+| `cargo xtask package --version <x>` | `mac`, then archives `build/Todo.app` into `build/Todo-<x>-macos-arm64.zip` via `ditto` and prints the zip path and its sha256 — what CI uses to cut a release |
 
 `mac`, `run`, `sim`, and `device` all require macOS and refuse to run
 anywhere else. `bindings`, `test`, `cov`, and `ci` are plain Rust and work on
@@ -117,10 +118,38 @@ cargo xtask device
 ```
 
 `cargo xtask mac`/`run` produce `build/Todo.app`, ad-hoc signed
-(`codesign --sign -`) — enough to run locally. There's no CI/CD release
-pipeline and no App Store or TestFlight distribution set up; this is
-currently a personal, locally-built app. Shipping to others would need a
-real Developer ID/App Store certificate in place of the ad-hoc signature.
+(`codesign --sign -`) — enough to run locally. There's no App Store or
+TestFlight distribution set up; ad-hoc signing is only good enough for
+installs on Macs the developer owns (see [Installing via Homebrew](#installing-via-homebrew)
+below), not public distribution.
+
+## Installing via Homebrew
+
+Other Macs (Apple Silicon only) can install the built app without any of the
+above toolchain — just [Homebrew](https://brew.sh):
+
+```bash
+brew tap bendiksolheim/tap https://github.com/bendiksolheim/remember
+brew install --cask todo
+```
+
+The app ships ad-hoc signed rather than through a paid Developer ID, so the
+Cask strips the quarantine flag on install (`postflight` in
+[`Casks/todo.rb`](Casks/todo.rb)) to avoid a Gatekeeper "unidentified
+developer" prompt. That's an acceptable tradeoff for installing on Macs you
+own — it would not be for distributing to other people.
+
+To cut a new release: push a `v*` tag. [`.github/workflows/release.yml`](.github/workflows/release.yml)
+builds and packages the app on a macOS runner, publishes a GitHub Release
+with the zip attached, and commits the updated version/sha256 back into
+`Casks/todo.rb`.
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+Then, on each install-only Mac: `brew update && brew upgrade --cask todo`.
 
 ### If a Swift build fails to link
 
