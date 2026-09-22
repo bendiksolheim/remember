@@ -16,7 +16,7 @@ jobs:
 
       - name: Install cargo-nextest and cargo-llvm-cov
         run: |
-          cargo install cargo-nextest cargo-llvm-cov
+          cargo install --locked cargo-nextest cargo-llvm-cov
 
       - name: cargo xtask ci
         run: cargo xtask ci
