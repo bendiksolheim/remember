@@ -28,8 +28,8 @@ jobs:
         run: |
           cargo xtask package --version "${{ steps.version.outputs.version }}" | tee /tmp/package.out
           {
-            echo "zip_path=$(sed -n '1p' /tmp/package.out)"
-            echo "sha256=$(sed -n '2p' /tmp/package.out)"
+            echo "zip_path=$(tail -n 2 /tmp/package.out | head -n 1)"
+            echo "sha256=$(tail -n 1 /tmp/package.out)"
           } >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
