@@ -139,15 +139,15 @@ Cask strips the quarantine flag on install (`postflight` in
 developer" prompt. That's an acceptable tradeoff for installing on Macs you
 own — it would not be for distributing to other people.
 
-To cut a new release: push a `v*` tag. [`.github/workflows/release.yml`](.github/workflows/release.yml)
-builds and packages the app on a macOS runner, publishes a GitHub Release
-with the zip attached, and commits the updated version/sha256 back into
-`Casks/todo.rb`.
-
-```bash
-git tag v0.1.1
-git push origin v0.1.1
-```
+To cut a new release: create and publish a GitHub Release (new or existing
+tag, draft or straight to published — the workflow only cares about the
+`published` moment). [`.github/workflows/release.yml`](.github/workflows/release.yml)
+then builds and packages the app on a macOS runner, uploads the zip as a
+release asset, and commits the updated version/sha256 back into
+`Casks/todo.rb`. It's triggered by the `release` event specifically (not a
+tag push) — creating a release through the UI or `gh release create` doesn't
+reliably fire a tag-push event, so the workflow listens for the thing you
+actually do.
 
 Then, on each install-only Mac: `brew update && brew upgrade --cask todo`.
 
