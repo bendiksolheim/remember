@@ -1,6 +1,6 @@
 cask "todo" do
-  version "1"
-  sha256 "8af3ef9c777d40b8484e29fcfc65098e5e43895835d2bad696d9274d47e11d9f"
+  version "2"
+  sha256 "801c7f3829b32918fef670f4810f9ce9372a5a7b5226f6e5fdf2afffc42ba88f"
 
   url "https://github.com/bendiksolheim/remember/releases/download/v#{version}/Todo-#{version}-macos-arm64.zip"
   name "Todo"
