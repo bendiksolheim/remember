@@ -147,11 +147,15 @@ impl App {
 /// An authenticated device's credentials. Rust never persists this —
 /// storing it (the platform Keychain) and handing it back on every call is
 /// the caller's job, per the working agreement's Keychain exception.
+/// Refreshing it, unlike storing it, happens on the Rust side (see
+/// `SyncStatusListener::on_session_refreshed`) -- `expires_at` (Unix
+/// seconds) is what lets `todo-sync` decide when that's due.
 #[derive(uniffi::Record)]
 pub struct Session {
     pub access_token: String,
     pub refresh_token: String,
     pub user_id: String,
+    pub expires_at: i64,
 }
 
 #[derive(uniffi::Record)]
@@ -177,6 +181,14 @@ pub enum SyncError {
 pub trait SyncStatusListener: Send + Sync {
     fn on_sync_complete(&self, outcome: SyncOutcome);
     fn on_sync_error(&self, error: SyncError);
+    /// Called whenever a sync attempt rotates the session's tokens --
+    /// independent of `on_sync_complete`/`on_sync_error`, and always before
+    /// whichever of those two follows. Supabase invalidates the old refresh
+    /// token the instant a new one is issued, so the caller must persist
+    /// this promptly (Keychain) even if the sync attempt that triggered the
+    /// refresh then goes on to fail for an unrelated reason -- otherwise it's
+    /// left holding a refresh token that no longer works.
+    fn on_session_refreshed(&self, session: Session);
 }
 
 #[derive(uniffi::Object)]
@@ -198,9 +210,10 @@ impl SyncClient {
             supabase_url.clone(),
             anon_key.clone(),
         ));
+        let auth = todo_sync::AuthClient::new(supabase_url, anon_key);
         Arc::new(Self {
-            auth: todo_sync::AuthClient::new(supabase_url, anon_key),
-            engine: todo_sync::SyncEngine::new(transport),
+            auth: auth.clone(),
+            engine: todo_sync::SyncEngine::new(transport, auth),
             auto_sync: Mutex::new(None),
         })
     }
@@ -225,10 +238,19 @@ impl SyncClient {
     /// synchronous-looking rather than `async` at the FFI boundary.
     pub fn sync_now(&self, app: Arc<App>, session: Session, listener: Arc<dyn SyncStatusListener>) {
         let core_app = Arc::clone(&app.inner);
+        let original = convert::session_to_sync(session);
+        let original_for_comparison = original.clone();
         self.engine
-            .sync_now(core_app, session.access_token, move |result| match result {
-                Ok(outcome) => listener.on_sync_complete(convert::sync_outcome_from_core(outcome)),
-                Err(error) => listener.on_sync_error(convert::sync_error_from_core(error)),
+            .sync_now(core_app, original, move |session, result| {
+                if session != original_for_comparison {
+                    listener.on_session_refreshed(convert::session_from_sync(session));
+                }
+                match result {
+                    Ok(outcome) => {
+                        listener.on_sync_complete(convert::sync_outcome_from_core(outcome))
+                    }
+                    Err(error) => listener.on_sync_error(convert::sync_error_from_core(error)),
+                }
             });
     }
 
@@ -245,9 +267,15 @@ impl SyncClient {
         }
         let coordinator =
             todo_sync::AutoSyncCoordinator::new(Arc::clone(&app.inner), self.engine.clone());
+        let result_listener = Arc::clone(&listener);
         coordinator.set_listener(move |result| match result {
-            Ok(outcome) => listener.on_sync_complete(convert::sync_outcome_from_core(outcome)),
-            Err(error) => listener.on_sync_error(convert::sync_error_from_core(error)),
+            Ok(outcome) => {
+                result_listener.on_sync_complete(convert::sync_outcome_from_core(outcome))
+            }
+            Err(error) => result_listener.on_sync_error(convert::sync_error_from_core(error)),
+        });
+        coordinator.set_session_listener(move |session| {
+            listener.on_session_refreshed(convert::session_from_sync(session));
         });
         *guard = Some(coordinator);
     }
@@ -258,7 +286,7 @@ impl SyncClient {
     pub fn set_sync_token(&self, session: Option<Session>) {
         let guard = self.auto_sync.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(coordinator) = guard.as_ref() {
-            coordinator.set_token(session.map(|s| s.access_token));
+            coordinator.set_session(session.map(convert::session_to_sync));
         }
     }
 

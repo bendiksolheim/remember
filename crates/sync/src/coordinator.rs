@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use todo_core::App;
 
+use crate::auth::Session;
 use crate::engine::{SyncEngine, SyncOutcome};
 use crate::SyncError;
 
@@ -52,18 +53,19 @@ impl Default for CoordinatorConfig {
 struct State {
     app: Arc<App>,
     engine: SyncEngine,
-    token: Mutex<Option<String>>,
+    session: Mutex<Option<Session>>,
     dirty_since: Mutex<Option<Instant>>,
     last_attempt: Mutex<Option<Instant>>,
     force: AtomicBool,
     shutdown: AtomicBool,
     config: CoordinatorConfig,
     on_result: Mutex<Option<Arc<dyn Fn(Result<SyncOutcome, SyncError>) + Send + Sync>>>,
+    on_session_refreshed: Mutex<Option<Arc<dyn Fn(Session) + Send + Sync>>>,
 }
 
 impl State {
     fn due(&self) -> bool {
-        if lock(&self.token).is_none() {
+        if lock(&self.session).is_none() {
             return false;
         }
         if self.force.load(Ordering::SeqCst) {
@@ -85,10 +87,21 @@ impl State {
         self.force.store(false, Ordering::SeqCst);
         *lock(&self.dirty_since) = None;
         *lock(&self.last_attempt) = Some(Instant::now());
-        let Some(token) = lock(&self.token).clone() else {
+        let Some(session) = lock(&self.session).clone() else {
             return;
         };
-        let result = self.engine.sync_once(&self.app, &token);
+        let (session, result) = self.engine.sync_once(&self.app, session);
+        // Persisted (and reported) unconditionally, before the sync result
+        // below -- Supabase invalidates the old refresh token the instant a
+        // new one is issued, so a rotated session must reach the listener
+        // even if `result` then turns out to be an error, or the caller is
+        // left holding a refresh token that no longer works.
+        if lock(&self.session).as_ref() != Some(&session) {
+            *lock(&self.session) = Some(session.clone());
+            if let Some(on_refreshed) = lock(&self.on_session_refreshed).clone() {
+                on_refreshed(session);
+            }
+        }
         if let Some(listener) = lock(&self.on_result).clone() {
             listener(result);
         }
@@ -111,13 +124,14 @@ impl AutoSyncCoordinator {
         let state = Arc::new(State {
             app: Arc::clone(&app),
             engine,
-            token: Mutex::new(None),
+            session: Mutex::new(None),
             dirty_since: Mutex::new(None),
             last_attempt: Mutex::new(None),
             force: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
             config,
             on_result: Mutex::new(None),
+            on_session_refreshed: Mutex::new(None),
         });
 
         // Any change at all -- a local edit, or even a change this same
@@ -155,8 +169,8 @@ impl AutoSyncCoordinator {
 
     /// `None` pauses syncing entirely (e.g. signed out) without tearing
     /// down the background thread.
-    pub fn set_token(&self, token: Option<String>) {
-        *lock(&self.state.token) = token;
+    pub fn set_session(&self, session: Option<Session>) {
+        *lock(&self.state.session) = session;
     }
 
     /// Requests an immediate sync attempt, bypassing the debounce/periodic
@@ -172,6 +186,17 @@ impl AutoSyncCoordinator {
         on_result: impl Fn(Result<SyncOutcome, SyncError>) + Send + Sync + 'static,
     ) {
         *lock(&self.state.on_result) = Some(Arc::new(on_result));
+    }
+
+    /// Called whenever a sync attempt rotates the session's tokens --
+    /// independent of whether the sync attempt itself then succeeds, so the
+    /// caller can persist it (Keychain) promptly. See `State::attempt_sync`'s
+    /// doc comment for why "independent of" matters here.
+    pub fn set_session_listener(
+        &self,
+        on_session_refreshed: impl Fn(Session) + Send + Sync + 'static,
+    ) {
+        *lock(&self.state.on_session_refreshed) = Some(Arc::new(on_session_refreshed));
     }
 }
 
@@ -190,9 +215,12 @@ mod tests {
     use std::sync::mpsc;
 
     use tempfile::TempDir;
-    use todo_core::Command;
+    use todo_core::{Command, FixedClock};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
+    use crate::auth::AuthClient;
     use crate::transport::{InMemoryTransport, SyncTransport};
 
     fn open(dir: &TempDir, name: &str) -> Arc<App> {
@@ -207,6 +235,23 @@ mod tests {
         .unwrap();
     }
 
+    /// Never needs a refresh -- tests that only care about the pull/push
+    /// scheduling never touch the network via `AuthClient` at all.
+    fn session(token: &str) -> Session {
+        Session {
+            access_token: token.to_string(),
+            refresh_token: "refresh".to_string(),
+            user_id: "user".to_string(),
+            expires_at: i64::MAX,
+        }
+    }
+
+    /// A placeholder `AuthClient` for tests whose session never needs
+    /// refreshing -- its base URL is never actually requested.
+    fn unused_auth() -> AuthClient {
+        AuthClient::new("http://unused.invalid", "anon-key")
+    }
+
     /// Short enough to keep tests fast, long enough to be reliably
     /// distinguishable from scheduling jitter on a loaded machine.
     fn fast_config() -> CoordinatorConfig {
@@ -218,14 +263,14 @@ mod tests {
     }
 
     #[test]
-    fn without_a_token_nothing_ever_syncs() {
+    fn without_a_session_nothing_ever_syncs() {
         let dir = TempDir::new().unwrap();
         let app = open(&dir, "a.sqlite3");
         add(&app, "local task");
         let transport = Arc::new(InMemoryTransport::new());
         let coordinator = AutoSyncCoordinator::with_config(
             Arc::clone(&app),
-            SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>),
+            SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>, unused_auth()),
             fast_config(),
         );
 
@@ -241,10 +286,10 @@ mod tests {
         let transport = Arc::new(InMemoryTransport::new());
         let coordinator = AutoSyncCoordinator::with_config(
             Arc::clone(&app),
-            SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>),
+            SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>, unused_auth()),
             fast_config(),
         );
-        coordinator.set_token(Some("tok".to_string()));
+        coordinator.set_session(Some(session("tok")));
 
         add(&app, "local task");
         thread::sleep(Duration::from_millis(150)); // > debounce, < periodic
@@ -270,10 +315,10 @@ mod tests {
         };
         let coordinator = AutoSyncCoordinator::with_config(
             Arc::clone(&app),
-            SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>),
+            SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>, unused_auth()),
             config,
         );
-        coordinator.set_token(Some("tok".to_string()));
+        coordinator.set_session(Some(session("tok")));
 
         // The very first check is always immediately "due" (nothing
         // attempted yet) -- that's deliberate (see `State::due`'s doc
@@ -315,10 +360,10 @@ mod tests {
         let transport = Arc::new(InMemoryTransport::new());
         let coordinator = AutoSyncCoordinator::with_config(
             Arc::clone(&app),
-            SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>),
+            SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>, unused_auth()),
             fast_config(),
         );
-        coordinator.set_token(Some("tok".to_string()));
+        coordinator.set_session(Some(session("tok")));
 
         add(&app, "local task");
         coordinator.sync_soon();
@@ -328,17 +373,17 @@ mod tests {
     }
 
     #[test]
-    fn set_token_none_pauses_syncing() {
+    fn set_session_none_pauses_syncing() {
         let dir = TempDir::new().unwrap();
         let app = open(&dir, "a.sqlite3");
         let transport = Arc::new(InMemoryTransport::new());
         let coordinator = AutoSyncCoordinator::with_config(
             Arc::clone(&app),
-            SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>),
+            SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>, unused_auth()),
             fast_config(),
         );
-        coordinator.set_token(Some("tok".to_string()));
-        coordinator.set_token(None);
+        coordinator.set_session(Some(session("tok")));
+        coordinator.set_session(None);
 
         add(&app, "local task");
         coordinator.sync_soon();
@@ -355,13 +400,13 @@ mod tests {
         let transport = Arc::new(InMemoryTransport::new());
         let coordinator = AutoSyncCoordinator::with_config(
             Arc::clone(&app),
-            SyncEngine::new(transport as Arc<dyn SyncTransport>),
+            SyncEngine::new(transport as Arc<dyn SyncTransport>, unused_auth()),
             fast_config(),
         );
 
         let (tx, rx) = mpsc::channel();
         coordinator.set_listener(move |result| tx.send(result).unwrap());
-        coordinator.set_token(Some("tok".to_string()));
+        coordinator.set_session(Some(session("tok")));
         coordinator.sync_soon();
 
         let outcome = rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
@@ -377,9 +422,9 @@ mod tests {
         let transport = Arc::new(InMemoryTransport::new());
         let coordinator = AutoSyncCoordinator::new(
             Arc::clone(&app),
-            SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>),
+            SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>, unused_auth()),
         );
-        coordinator.set_token(Some("tok".to_string()));
+        coordinator.set_session(Some(session("tok")));
 
         // `sync_soon` bypasses the default config's multi-second debounce
         // entirely, so this doesn't need to wait anywhere near that long —
@@ -391,11 +436,11 @@ mod tests {
     }
 
     #[test]
-    fn attempt_sync_with_no_token_is_a_no_op_not_a_panic() {
-        // Exercises `State::attempt_sync`'s own defensive no-token guard
+    fn attempt_sync_with_no_session_is_a_no_op_not_a_panic() {
+        // Exercises `State::attempt_sync`'s own defensive no-session guard
         // directly -- in practice `due()` already prevents the background
-        // loop from ever calling this without a token, but a concurrent
-        // `set_token(None)` landing between that check and this call is a
+        // loop from ever calling this without a session, but a concurrent
+        // `set_session(None)` landing between that check and this call is a
         // real (if narrow) race in production, so the guard stays and gets
         // tested at the unit it actually protects.
         let dir = TempDir::new().unwrap();
@@ -403,17 +448,69 @@ mod tests {
         let transport = Arc::new(InMemoryTransport::new());
         let state = State {
             app,
-            engine: SyncEngine::new(transport as Arc<dyn SyncTransport>),
-            token: Mutex::new(None),
+            engine: SyncEngine::new(transport as Arc<dyn SyncTransport>, unused_auth()),
+            session: Mutex::new(None),
             dirty_since: Mutex::new(None),
             last_attempt: Mutex::new(None),
             force: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
             config: fast_config(),
             on_result: Mutex::new(None),
+            on_session_refreshed: Mutex::new(None),
         };
 
         state.attempt_sync(); // must not panic
         assert!(lock(&state.last_attempt).is_some()); // still records the attempt time
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_rotated_session_is_persisted_via_the_session_listener_even_though_the_sync_result_is_reported_separately(
+    ) {
+        let auth_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v1/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "refreshed-access",
+                "refresh_token": "refreshed-refresh",
+                "token_type": "bearer",
+                "expires_in": 3600,
+                "user": { "id": "user-789", "email": "a@example.com" }
+            })))
+            .mount(&auth_server)
+            .await;
+
+        // `AuthClient` wraps a `reqwest::blocking::Client`, which owns its
+        // own runtime under the hood -- constructing or dropping one (via
+        // `coordinator` here) directly inside this test's async body panics
+        // ("cannot drop a runtime in a context where blocking is not
+        // allowed"), so the whole thing runs inside `spawn_blocking` instead,
+        // same as every other blocking-client test in this crate.
+        let auth_uri = auth_server.uri();
+        tokio::task::spawn_blocking(move || {
+            let dir = TempDir::new().unwrap();
+            let app = open(&dir, "a.sqlite3");
+            let transport = Arc::new(InMemoryTransport::new());
+            let auth = AuthClient::with_clock(auth_uri, "anon-key", Arc::new(FixedClock(0)));
+            let coordinator = AutoSyncCoordinator::with_config(
+                Arc::clone(&app),
+                SyncEngine::new(transport as Arc<dyn SyncTransport>, auth),
+                fast_config(),
+            );
+
+            let (tx, rx) = mpsc::channel();
+            coordinator.set_session_listener(move |session| tx.send(session).unwrap());
+            let expiring = Session {
+                expires_at: 0,
+                ..session("stale-access")
+            };
+            coordinator.set_session(Some(expiring));
+            coordinator.sync_soon();
+
+            let refreshed = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(refreshed.access_token, "refreshed-access");
+            drop(coordinator);
+        })
+        .await
+        .unwrap();
     }
 }

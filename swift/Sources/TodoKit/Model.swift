@@ -63,6 +63,9 @@ public final class TodoModel {
                 },
                 onError: { [weak self] error in
                     Task { @MainActor in self?.lastSyncError = "\(error)" }
+                },
+                onSessionRefreshed: { [weak self] session in
+                    Task { @MainActor in self?.persist(session) }
                 }
             )
             self.autoSyncBridge = autoSyncBridge
@@ -145,6 +148,9 @@ public final class TodoModel {
                     self?.isSyncing = false
                     self?.lastSyncError = "\(error)"
                 }
+            },
+            onSessionRefreshed: { [weak self] session in
+                Task { @MainActor in self?.persist(session) }
             }
         )
         syncClient.syncNow(app: app, session: session, listener: statusBridge)
@@ -154,7 +160,8 @@ public final class TodoModel {
         let stored = StoredSession(
             accessToken: session.accessToken,
             refreshToken: session.refreshToken,
-            userId: session.userId
+            userId: session.userId,
+            expiresAt: session.expiresAt
         )
         if let data = try? JSONEncoder().encode(stored) {
             KeychainStore.save(data)
@@ -168,7 +175,8 @@ public final class TodoModel {
         return Session(
             accessToken: stored.accessToken,
             refreshToken: stored.refreshToken,
-            userId: stored.userId
+            userId: stored.userId,
+            expiresAt: stored.expiresAt
         )
     }
 }
@@ -182,14 +190,21 @@ private final class ListenerBridge: SnapshotListener, @unchecked Sendable {
 private final class SyncStatusBridge: SyncStatusListener, @unchecked Sendable {
     private let onComplete: (SyncOutcome) -> Void
     private let onError: (SyncError) -> Void
+    private let onSessionRefreshed: (Session) -> Void
 
-    init(onComplete: @escaping (SyncOutcome) -> Void, onError: @escaping (SyncError) -> Void) {
+    init(
+        onComplete: @escaping (SyncOutcome) -> Void,
+        onError: @escaping (SyncError) -> Void,
+        onSessionRefreshed: @escaping (Session) -> Void
+    ) {
         self.onComplete = onComplete
         self.onError = onError
+        self.onSessionRefreshed = onSessionRefreshed
     }
 
     func onSyncComplete(outcome: SyncOutcome) { onComplete(outcome) }
     func onSyncError(error: SyncError) { onError(error) }
+    func onSessionRefreshed(session: Session) { onSessionRefreshed(session) }
 }
 
 /// Keychain can only store bytes — this is the plain data shape `Session`
@@ -198,4 +213,24 @@ private struct StoredSession: Codable {
     let accessToken: String
     let refreshToken: String
     let userId: String
+    let expiresAt: Int64
+
+    init(accessToken: String, refreshToken: String, userId: String, expiresAt: Int64) {
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.userId = userId
+        self.expiresAt = expiresAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        accessToken = try container.decode(String.self, forKey: .accessToken)
+        refreshToken = try container.decode(String.self, forKey: .refreshToken)
+        userId = try container.decode(String.self, forKey: .userId)
+        // Missing in a session stored before refresh support shipped --
+        // treat it as already-expired so the next sync attempt refreshes it
+        // immediately rather than trusting a token whose real age is
+        // unknown.
+        expiresAt = try container.decodeIfPresent(Int64.self, forKey: .expiresAt) ?? 0
+    }
 }

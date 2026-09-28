@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use todo_core::App;
 
+use crate::auth::{AuthClient, Session};
 use crate::transport::SyncTransport;
 use crate::SyncError;
 
@@ -19,20 +20,43 @@ pub struct SyncOutcome {
 #[derive(Clone)]
 pub struct SyncEngine {
     transport: Arc<dyn SyncTransport>,
+    auth: AuthClient,
 }
 
 impl SyncEngine {
-    pub fn new(transport: Arc<dyn SyncTransport>) -> Self {
-        Self { transport }
+    pub fn new(transport: Arc<dyn SyncTransport>, auth: AuthClient) -> Self {
+        Self { transport, auth }
     }
 
-    /// One full sync round: pull first, so this device merges what other
-    /// devices already contributed before contributing its own changes —
-    /// this ordering doesn't affect correctness (Loro's merge is
-    /// commutative either way) but means a device's own push always
-    /// reflects the latest merged state. Synchronous; see [`Self::sync_now`]
-    /// to run this off the calling thread.
-    pub fn sync_once(&self, app: &App, token: &str) -> Result<SyncOutcome, SyncError> {
+    /// One full sync round: refresh `session` first if it's at or near
+    /// expiry, then pull (so this device merges what other devices already
+    /// contributed before contributing its own changes -- this ordering
+    /// doesn't affect correctness, Loro's merge is commutative either way,
+    /// but it means a device's own push always reflects the latest merged
+    /// state), then push.
+    ///
+    /// Always returns the session that was actually used -- unchanged from
+    /// the one passed in unless a refresh happened. Deliberately returned
+    /// alongside the `Result` rather than nested inside its `Ok`: Supabase
+    /// rotates the refresh token the moment a refresh succeeds, invalidating
+    /// the one the caller has stored, so a rotated session must make it back
+    /// to the caller (to persist) even when the pull/push that follows then
+    /// fails for an unrelated reason. Synchronous; see [`Self::sync_now`] to
+    /// run this off the calling thread.
+    pub fn sync_once(
+        &self,
+        app: &App,
+        session: Session,
+    ) -> (Session, Result<SyncOutcome, SyncError>) {
+        let session = match self.auth.ensure_fresh(session.clone()) {
+            Ok(fresh) => fresh,
+            Err(err) => return (session, Err(err)),
+        };
+        let result = self.run(app, &session.access_token);
+        (session, result)
+    }
+
+    fn run(&self, app: &App, token: &str) -> Result<SyncOutcome, SyncError> {
         let mut pulled = 0;
         let since = app.last_pulled_seq()?;
         for update in self.transport.pull(token, since)? {
@@ -65,14 +89,15 @@ impl SyncEngine {
     pub fn sync_now(
         &self,
         app: Arc<App>,
-        token: String,
-        on_complete: impl FnOnce(Result<SyncOutcome, SyncError>) + Send + 'static,
+        session: Session,
+        on_complete: impl FnOnce(Session, Result<SyncOutcome, SyncError>) + Send + 'static,
     ) {
         let transport = Arc::clone(&self.transport);
+        let auth = self.auth.clone();
         std::thread::spawn(move || {
-            let engine = SyncEngine { transport };
-            let result = engine.sync_once(&app, &token);
-            on_complete(result);
+            let engine = SyncEngine { transport, auth };
+            let (session, result) = engine.sync_once(&app, session);
+            on_complete(session, result);
         });
     }
 }
@@ -83,7 +108,9 @@ mod tests {
     use std::sync::mpsc;
 
     use tempfile::TempDir;
-    use todo_core::Command;
+    use todo_core::{Command, FixedClock};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
     use crate::transport::InMemoryTransport;
@@ -100,15 +127,33 @@ mod tests {
         .unwrap();
     }
 
+    /// Never needs a refresh (`expires_at` is as far out as an `i64` goes),
+    /// so tests that only care about the pull/push mechanics never touch
+    /// the network via `AuthClient` at all.
+    fn fresh_session(token: &str) -> Session {
+        Session {
+            access_token: token.to_string(),
+            refresh_token: "refresh".to_string(),
+            user_id: "user".to_string(),
+            expires_at: i64::MAX,
+        }
+    }
+
+    /// A placeholder `AuthClient` for tests whose session never needs
+    /// refreshing -- its base URL is never actually requested.
+    fn unused_auth() -> AuthClient {
+        AuthClient::new("http://unused.invalid", "anon-key")
+    }
+
     #[test]
     fn sync_once_with_nothing_local_and_nothing_remote_is_a_no_op() {
         let dir = TempDir::new().unwrap();
         let app = open(&dir, "a.sqlite3");
         let transport: Arc<dyn SyncTransport> = Arc::new(InMemoryTransport::new());
-        let engine = SyncEngine::new(transport);
+        let engine = SyncEngine::new(transport, unused_auth());
 
-        let outcome = engine.sync_once(&app, "tok").unwrap();
-        assert_eq!(outcome, SyncOutcome::default());
+        let (_, result) = engine.sync_once(&app, fresh_session("tok"));
+        assert_eq!(result.unwrap(), SyncOutcome::default());
     }
 
     #[test]
@@ -117,10 +162,10 @@ mod tests {
         let app = open(&dir, "a.sqlite3");
         add(&app, "local task");
         let transport = Arc::new(InMemoryTransport::new());
-        let engine = SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>);
+        let engine = SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>, unused_auth());
 
-        let outcome = engine.sync_once(&app, "tok").unwrap();
-        assert!(outcome.pushed_bytes > 0);
+        let (_, result) = engine.sync_once(&app, fresh_session("tok"));
+        assert!(result.unwrap().pushed_bytes > 0);
         assert_eq!(transport.pull("tok", None).unwrap().len(), 1);
     }
 
@@ -139,9 +184,10 @@ mod tests {
             .unwrap();
 
         let app = open(&dir, "a.sqlite3");
-        let engine = SyncEngine::new(transport as Arc<dyn SyncTransport>);
-        let outcome = engine.sync_once(&app, "tok").unwrap();
+        let engine = SyncEngine::new(transport as Arc<dyn SyncTransport>, unused_auth());
+        let (_, result) = engine.sync_once(&app, fresh_session("tok"));
 
+        let outcome = result.unwrap();
         assert_eq!(outcome.pulled, 1);
         assert_eq!(app.current().rows.len(), 1);
         assert_eq!(app.current().rows[0].title, "from elsewhere");
@@ -159,13 +205,13 @@ mod tests {
         add(&device_b, "from b");
 
         let transport = Arc::new(InMemoryTransport::new());
-        let engine = SyncEngine::new(transport as Arc<dyn SyncTransport>);
+        let engine = SyncEngine::new(transport as Arc<dyn SyncTransport>, unused_auth());
 
-        engine.sync_once(&device_a, "tok").unwrap();
-        engine.sync_once(&device_b, "tok").unwrap();
+        engine.sync_once(&device_a, fresh_session("tok")).1.unwrap();
+        engine.sync_once(&device_b, fresh_session("tok")).1.unwrap();
         // device_b's pull above already saw device_a's push. device_a still
         // needs a second round to see device_b's.
-        engine.sync_once(&device_a, "tok").unwrap();
+        engine.sync_once(&device_a, fresh_session("tok")).1.unwrap();
 
         assert_eq!(device_a.current().rows.len(), 2);
         assert_eq!(device_b.current().rows.len(), 2);
@@ -177,15 +223,20 @@ mod tests {
         let app = Arc::new(open(&dir, "a.sqlite3"));
         add(&app, "task");
         let transport: Arc<dyn SyncTransport> = Arc::new(InMemoryTransport::new());
-        let engine = SyncEngine::new(transport);
+        let engine = SyncEngine::new(transport, unused_auth());
 
         let (tx, rx) = mpsc::channel();
-        engine.sync_now(Arc::clone(&app), "tok".to_string(), move |result| {
-            tx.send(result).unwrap();
-        });
+        engine.sync_now(
+            Arc::clone(&app),
+            fresh_session("tok"),
+            move |session, result| {
+                tx.send((session, result)).unwrap();
+            },
+        );
 
-        let outcome = rx.recv().unwrap().unwrap();
-        assert!(outcome.pushed_bytes > 0);
+        let (session, result) = rx.recv().unwrap();
+        assert!(result.unwrap().pushed_bytes > 0);
+        assert_eq!(session.access_token, "tok");
     }
 
     struct PullFails;
@@ -214,10 +265,10 @@ mod tests {
     fn sync_now_delivers_errors_through_the_callback_not_a_panic() {
         let dir = TempDir::new().unwrap();
         let app = Arc::new(open(&dir, "a.sqlite3"));
-        let engine = SyncEngine::new(Arc::new(PullFails));
+        let engine = SyncEngine::new(Arc::new(PullFails), unused_auth());
 
         let (tx, rx) = mpsc::channel();
-        engine.sync_now(app, "tok".to_string(), move |result| {
+        engine.sync_now(app, fresh_session("tok"), move |_session, result| {
             tx.send(result).unwrap();
         });
 
@@ -229,9 +280,149 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let app = open(&dir, "a.sqlite3");
         add(&app, "local task"); // ensures has_unpushed_changes() is true
-        let engine = SyncEngine::new(Arc::new(PushFails));
+        let engine = SyncEngine::new(Arc::new(PushFails), unused_auth());
 
-        let err = engine.sync_once(&app, "tok").err().unwrap();
-        assert!(matches!(err, SyncError::Transport(_)));
+        let (_, result) = engine.sync_once(&app, fresh_session("tok"));
+        assert!(matches!(result.err().unwrap(), SyncError::Transport(_)));
+    }
+
+    fn canned_refresh_response() -> serde_json::Value {
+        serde_json::json!({
+            "access_token": "refreshed-access",
+            "refresh_token": "refreshed-refresh",
+            "token_type": "bearer",
+            "expires_in": 3600,
+            "user": { "id": "user-789", "email": "a@example.com" }
+        })
+    }
+
+    /// Records every token it's called with, so a test can assert *which*
+    /// token actually reached the transport -- unlike `InMemoryTransport`,
+    /// which ignores its `token` argument entirely.
+    #[derive(Default)]
+    struct RecordingTransport {
+        tokens_seen: std::sync::Mutex<Vec<String>>,
+    }
+    impl SyncTransport for RecordingTransport {
+        fn push(&self, token: &str, _: u64, _: Vec<u8>) -> Result<(), SyncError> {
+            self.tokens_seen.lock().unwrap().push(token.to_string());
+            Ok(())
+        }
+        fn pull(&self, token: &str, _: Option<i64>) -> Result<Vec<crate::PulledUpdate>, SyncError> {
+            self.tokens_seen.lock().unwrap().push(token.to_string());
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sync_once_refreshes_an_expiring_session_before_syncing() {
+        let auth_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v1/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(canned_refresh_response()))
+            .mount(&auth_server)
+            .await;
+
+        let auth_base = auth_server.uri();
+        let transport = Arc::new(RecordingTransport::default());
+        // `AuthClient` wraps a `reqwest::blocking::Client`, which owns its
+        // own runtime under the hood -- even just constructing one directly
+        // in this test's async body panics, so construction (not just the
+        // sync call) happens inside `spawn_blocking` too.
+        let transport_for_closure = transport.clone();
+        let (session, result) = tokio::task::spawn_blocking(move || {
+            let dir = TempDir::new().unwrap();
+            let app = open(&dir, "a.sqlite3");
+            add(&app, "local task");
+            let engine = SyncEngine::new(
+                transport_for_closure as Arc<dyn SyncTransport>,
+                AuthClient::with_clock(auth_base, "anon-key", Arc::new(FixedClock(0))),
+            );
+            let expiring = Session {
+                expires_at: 0,
+                ..fresh_session("stale-access")
+            };
+            engine.sync_once(&app, expiring)
+        })
+        .await
+        .unwrap();
+
+        result.unwrap();
+        assert_eq!(session.access_token, "refreshed-access");
+        assert_eq!(session.refresh_token, "refreshed-refresh");
+        // Confirms the *refreshed* token is what actually reached the
+        // transport, not the stale one the session started with.
+        let tokens_seen = transport.tokens_seen.lock().unwrap();
+        assert!(!tokens_seen.is_empty());
+        assert!(tokens_seen.iter().all(|t| t == "refreshed-access"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sync_once_returns_the_original_session_unchanged_when_refresh_fails() {
+        let auth_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v1/token"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "invalid_grant"
+            })))
+            .mount(&auth_server)
+            .await;
+
+        let auth_base = auth_server.uri();
+        let (session, result) = tokio::task::spawn_blocking(move || {
+            let dir = TempDir::new().unwrap();
+            let app = open(&dir, "a.sqlite3");
+            let engine = SyncEngine::new(
+                Arc::new(PullFails),
+                AuthClient::with_clock(auth_base, "anon-key", Arc::new(FixedClock(0))),
+            );
+            let expiring = Session {
+                expires_at: 0,
+                ..fresh_session("stale-access")
+            };
+            engine.sync_once(&app, expiring)
+        })
+        .await
+        .unwrap();
+
+        assert!(matches!(result, Err(SyncError::Auth(_))));
+        assert_eq!(session.access_token, "stale-access");
+    }
+
+    /// The core persistence-safety guarantee: Supabase invalidates the old
+    /// refresh token the instant a new one is issued, so a rotated session
+    /// must be handed back to the caller even when the pull/push that
+    /// follows the refresh then fails for an unrelated reason -- otherwise
+    /// the caller keeps a refresh token that no longer works and the device
+    /// is stuck until the user signs in again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sync_once_returns_a_rotated_session_even_when_the_sync_that_follows_fails() {
+        let auth_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v1/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(canned_refresh_response()))
+            .mount(&auth_server)
+            .await;
+
+        let auth_base = auth_server.uri();
+        let (session, result) = tokio::task::spawn_blocking(move || {
+            let dir = TempDir::new().unwrap();
+            let app = open(&dir, "a.sqlite3");
+            let engine = SyncEngine::new(
+                Arc::new(PullFails),
+                AuthClient::with_clock(auth_base, "anon-key", Arc::new(FixedClock(0))),
+            );
+            let expiring = Session {
+                expires_at: 0,
+                ..fresh_session("stale-access")
+            };
+            engine.sync_once(&app, expiring)
+        })
+        .await
+        .unwrap();
+
+        assert!(matches!(result, Err(SyncError::Transport(_))));
+        assert_eq!(session.access_token, "refreshed-access");
+        assert_eq!(session.refresh_token, "refreshed-refresh");
     }
 }

@@ -69,6 +69,16 @@ pub fn session_from_sync(session: todo_sync::Session) -> Session {
         access_token: session.access_token,
         refresh_token: session.refresh_token,
         user_id: session.user_id,
+        expires_at: session.expires_at,
+    }
+}
+
+pub fn session_to_sync(session: Session) -> todo_sync::Session {
+    todo_sync::Session {
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+        user_id: session.user_id,
+        expires_at: session.expires_at,
     }
 }
 
@@ -268,15 +278,31 @@ mod tests {
     }
 
     #[test]
-    fn session_converts_all_fields() {
+    fn session_from_sync_converts_all_fields() {
         let session = session_from_sync(todo_sync::Session {
             access_token: "a".to_string(),
             refresh_token: "r".to_string(),
             user_id: "u".to_string(),
+            expires_at: 42,
         });
         assert_eq!(session.access_token, "a");
         assert_eq!(session.refresh_token, "r");
         assert_eq!(session.user_id, "u");
+        assert_eq!(session.expires_at, 42);
+    }
+
+    #[test]
+    fn session_to_sync_converts_all_fields() {
+        let session = session_to_sync(Session {
+            access_token: "a".to_string(),
+            refresh_token: "r".to_string(),
+            user_id: "u".to_string(),
+            expires_at: 42,
+        });
+        assert_eq!(session.access_token, "a");
+        assert_eq!(session.refresh_token, "r");
+        assert_eq!(session.user_id, "u");
+        assert_eq!(session.expires_at, 42);
     }
 
     #[test]
