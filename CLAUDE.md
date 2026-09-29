@@ -9,7 +9,7 @@ Apple SDK. Do not try to install either, accept the situation.
 `bindings`; write Swift source files.
 
 **You may not:** build or run the app. `cargo xtask mac | run | sim | device`
-require macOS and will refuse to run here.
+require macOS and will refuse to run here. You may not run `cargo xtask ci` either.
 
 ## Non-negotiables
 
