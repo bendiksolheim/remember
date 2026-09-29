@@ -231,6 +231,7 @@ mod tests {
         app.dispatch(Command::Add {
             title: title.to_string(),
             after: None,
+            due: None,
         })
         .unwrap();
     }

@@ -4,6 +4,7 @@ pub enum Command {
     Add {
         title: String,
         after: Option<String>,
+        due: Option<i64>,
     },
     SetTitle {
         id: String,

@@ -6,9 +6,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+mod civil;
 pub mod clock;
 pub mod command;
 mod doc;
+mod due_parse;
 pub mod snapshot;
 mod store;
 
@@ -17,7 +19,7 @@ pub use clock::{Clock, IdSource, SystemClock, UuidSource};
 pub use clock::{FixedClock, SeqIdSource};
 pub use command::{Command, ViewFilter};
 pub use doc::Doc;
-pub use snapshot::{Snapshot, TaskRow};
+pub use snapshot::{DueDetection, Snapshot, TaskRow};
 pub use store::Store;
 
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -146,6 +148,39 @@ impl App {
     pub fn set_view(&self, view: ViewFilter) {
         lock(&self.shared.state).view = view;
         self.notify();
+    }
+
+    /// Sets the local UTC offset (seconds) used to compute "today" for both
+    /// `current()`'s `due_label`/`overdue` fields and `detect_due`'s phrase
+    /// resolution. Not a document mutation — see `Doc::set_local_offset_seconds`
+    /// — but it does push a fresh snapshot, since existing rows' overdue
+    /// status/labels can change even though nothing was actually edited
+    /// (e.g. the device crossed into a new local day, or the user
+    /// travelled). Call at launch and again whenever it might have changed:
+    /// app foreground, and the system timezone-change notification.
+    pub fn set_local_offset_seconds(&self, offset_seconds: i32) {
+        lock(&self.shared.state)
+            .doc
+            .set_local_offset_seconds(offset_seconds);
+        self.notify();
+    }
+
+    /// Detects a due-date phrase at the end of `text` (see [`due_parse`]),
+    /// resolved against the current local day — the same "today" `current()`
+    /// uses for `due_label`/`overdue`. A pure lookup: never touches the
+    /// document, never commits, never bumps `revision`. `None` if `text`
+    /// doesn't end in a recognized phrase.
+    pub fn detect_due(&self, text: &str) -> Option<DueDetection> {
+        let now = self.shared.clock.now();
+        let offset = lock(&self.shared.state).doc.local_offset_seconds();
+        let today = civil::day_number(now + i64::from(offset));
+        let detection = due_parse::detect(text, today)?;
+        let due = detection.day_number * civil::SECONDS_PER_DAY - i64::from(offset);
+        Some(DueDetection {
+            stripped_title: text[..detection.match_start].trim_end().to_string(),
+            label: snapshot::due_label(due, now, offset),
+            due,
+        })
     }
 
     pub fn current(&self) -> Snapshot {

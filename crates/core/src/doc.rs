@@ -20,6 +20,12 @@ pub struct Doc {
     doc: LoroDoc,
     undo: UndoManager,
     revision: u64,
+    /// The caller's local UTC offset, in seconds — used only to compute
+    /// "today" for `read()`'s `due_label`/`overdue` fields. Local display
+    /// config, not CRDT content: never committed, never touches `revision`,
+    /// never synced. Defaults to 0 (UTC) until the caller sets it — see
+    /// `Doc::set_local_offset_seconds`.
+    local_offset_seconds: i32,
 }
 
 fn doc_err<E: std::fmt::Display>(e: E) -> CoreError {
@@ -47,6 +53,13 @@ fn as_i64(value: &LoroValue) -> Option<i64> {
     }
 }
 
+fn due_to_loro_value(due: Option<i64>) -> LoroValue {
+    match due {
+        Some(d) => d.into(),
+        None => LoroValue::Null,
+    }
+}
+
 fn decode_vv(bytes: Option<&[u8]>) -> Result<VersionVector, CoreError> {
     match bytes {
         Some(b) => VersionVector::decode(b).map_err(doc_err),
@@ -71,6 +84,7 @@ impl Doc {
             doc,
             undo,
             revision: 0,
+            local_offset_seconds: 0,
         })
     }
 
@@ -84,7 +98,24 @@ impl Doc {
             doc,
             undo,
             revision: 0,
+            local_offset_seconds: 0,
         })
+    }
+
+    /// Sets the local UTC offset (seconds) used by `read()` to compute
+    /// "today" for `due_label`/`overdue`. Not a CRDT mutation — no commit,
+    /// no `revision` bump; the caller (`App`) is responsible for notifying
+    /// subscribers itself, since a fresh snapshot with corrected labels is
+    /// worth pushing even though the document's content didn't change.
+    pub fn set_local_offset_seconds(&mut self, offset_seconds: i32) {
+        self.local_offset_seconds = offset_seconds;
+    }
+
+    /// The offset most recently set via `set_local_offset_seconds` (0/UTC
+    /// until then). Exposed so `App::detect_due` can resolve "today" the
+    /// same way `read()` does.
+    pub fn local_offset_seconds(&self) -> i32 {
+        self.local_offset_seconds
     }
 
     pub fn export_snapshot(&self) -> Result<Vec<u8>, CoreError> {
@@ -154,7 +185,7 @@ impl Doc {
         ids: &dyn IdSource,
     ) -> Result<(), CoreError> {
         match cmd {
-            Command::Add { title, after } => self.apply_add(title, after, clock, ids),
+            Command::Add { title, after, due } => self.apply_add(title, after, due, clock, ids),
             Command::SetTitle { id, title } => self.apply_set_title(&id, title),
             Command::SetNotes { id, notes } => self.set_field(&id, "notes", notes.into()),
             Command::SetDone { id, done } => self.set_field(&id, "done", done.into()),
@@ -210,8 +241,8 @@ impl Doc {
                 notes,
                 done,
                 due,
-                due_label: due.map(|d| due_label(d, now)),
-                overdue: due.is_some_and(|d| is_overdue(d, now)),
+                due_label: due.map(|d| due_label(d, now, self.local_offset_seconds)),
+                overdue: due.is_some_and(|d| is_overdue(d, now, self.local_offset_seconds)),
             });
         }
 
@@ -264,10 +295,7 @@ impl Doc {
 
     fn apply_set_due(&mut self, id: &str, due: Option<i64>) -> Result<(), CoreError> {
         let task = self.existing_task_map(id)?;
-        let value: LoroValue = match due {
-            Some(d) => d.into(),
-            None => LoroValue::Null,
-        };
+        let value = due_to_loro_value(due);
         if task.get("due").map(|v| v.get_deep_value()).as_ref() == Some(&value) {
             return Ok(());
         }
@@ -299,6 +327,7 @@ impl Doc {
         &mut self,
         title: String,
         after: Option<String>,
+        due: Option<i64>,
         clock: &dyn Clock,
         ids: &dyn IdSource,
     ) -> Result<(), CoreError> {
@@ -319,7 +348,8 @@ impl Doc {
         task.insert("title", trimmed).map_err(doc_err)?;
         task.insert("notes", "").map_err(doc_err)?;
         task.insert("done", false).map_err(doc_err)?;
-        task.insert("due", LoroValue::Null).map_err(doc_err)?;
+        task.insert("due", due_to_loro_value(due))
+            .map_err(doc_err)?;
         task.insert("created_at", clock.now()).map_err(doc_err)?;
 
         order.insert(pos, id).map_err(doc_err)?;
@@ -453,6 +483,7 @@ mod tests {
             Command::Add {
                 title: "a".to_string(),
                 after: None,
+                due: None,
             },
             &FixedClock(0),
             &crate::clock::SeqIdSource::new(),
@@ -474,6 +505,7 @@ mod tests {
             Command::Add {
                 title: "a".to_string(),
                 after: None,
+                due: None,
             },
             &FixedClock(0),
             &crate::clock::SeqIdSource::new(),
@@ -499,6 +531,7 @@ mod tests {
             Command::Add {
                 title: "a".to_string(),
                 after: None,
+                due: None,
             },
             &FixedClock(0),
             &ids,
@@ -511,6 +544,7 @@ mod tests {
             Command::Add {
                 title: "b".to_string(),
                 after: None,
+                due: None,
             },
             &FixedClock(0),
             &ids,
@@ -546,6 +580,7 @@ mod tests {
             Command::Add {
                 title: "a".to_string(),
                 after: None,
+                due: None,
             },
             &FixedClock(0),
             &crate::clock::SeqIdSource::new(),
@@ -575,5 +610,78 @@ mod tests {
             .err()
             .unwrap();
         assert!(matches!(err, CoreError::Document(_)));
+    }
+
+    #[test]
+    fn add_with_due_stores_it_on_the_new_task() {
+        let mut doc = Doc::new(1).unwrap();
+        doc.apply(
+            Command::Add {
+                title: "a".to_string(),
+                after: None,
+                due: Some(1_000),
+            },
+            &FixedClock(0),
+            &crate::clock::SeqIdSource::new(),
+        )
+        .unwrap();
+        let row = &doc.read(ViewFilter::All, &FixedClock(0)).rows[0];
+        assert_eq!(row.due, Some(1_000));
+    }
+
+    #[test]
+    fn add_with_no_due_leaves_it_unset() {
+        let mut doc = Doc::new(1).unwrap();
+        doc.apply(
+            Command::Add {
+                title: "a".to_string(),
+                after: None,
+                due: None,
+            },
+            &FixedClock(0),
+            &crate::clock::SeqIdSource::new(),
+        )
+        .unwrap();
+        let row = &doc.read(ViewFilter::All, &FixedClock(0)).rows[0];
+        assert_eq!(row.due, None);
+    }
+
+    #[test]
+    fn local_offset_seconds_defaults_to_zero_and_is_settable() {
+        let mut doc = Doc::new(1).unwrap();
+        assert_eq!(doc.local_offset_seconds(), 0);
+        doc.set_local_offset_seconds(-28_800);
+        assert_eq!(doc.local_offset_seconds(), -28_800);
+    }
+
+    #[test]
+    fn set_local_offset_seconds_changes_read_without_committing_or_bumping_revision() {
+        let mut doc = Doc::new(1).unwrap();
+        let ids = crate::clock::SeqIdSource::new();
+        // due = 1970-01-01 00:00 UTC; "now" = 1970-01-01 13:00 UTC — same
+        // UTC calendar day, so at offset 0 this isn't overdue.
+        let clock = FixedClock(46_800);
+        doc.apply(
+            Command::Add {
+                title: "a".to_string(),
+                after: None,
+                due: Some(0),
+            },
+            &clock,
+            &ids,
+        )
+        .unwrap();
+        let before = doc.read(ViewFilter::All, &clock);
+        assert!(!before.rows[0].overdue);
+
+        // UTC+12: "now" (13:00 UTC) is already 1970-01-02 01:00 local — a
+        // full local day past `due`, which is still 1970-01-01 12:00 local
+        // at that same offset. Overdue flips without any new command or a
+        // `revision` bump, since this is display config, not content.
+        let revision_before = before.revision;
+        doc.set_local_offset_seconds(12 * 3_600);
+        let after = doc.read(ViewFilter::All, &clock);
+        assert!(after.rows[0].overdue);
+        assert_eq!(after.revision, revision_before);
     }
 }

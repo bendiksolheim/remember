@@ -2,9 +2,37 @@ mod parse;
 
 use std::io::{self, BufRead, Write};
 
-use todo_core::{App, Snapshot};
+use todo_core::{App, Command, Snapshot};
 
 use parse::parse;
+
+/// `parse` never detects a due date itself (it has no access to `App`'s
+/// clock/offset) — it always returns `due: None` for `add`. This enriches
+/// that with `App::detect_due` so the same "buy milk tomorrow" phrasing the
+/// GUI's quick-add will support is exercisable here too, since there's no
+/// Swift toolchain in this container to try the real UI.
+fn enrich_add(app: &App, command: Command) -> Command {
+    let Command::Add {
+        title,
+        after,
+        due: None,
+    } = command
+    else {
+        return command;
+    };
+    match app.detect_due(&title) {
+        Some(detection) => Command::Add {
+            title: detection.stripped_title,
+            after,
+            due: Some(detection.due),
+        },
+        None => Command::Add {
+            title,
+            after,
+            due: None,
+        },
+    }
+}
 
 fn default_db_path() -> String {
     let dir = dirs::data_dir()
@@ -48,7 +76,7 @@ fn main() {
 
         match parse(&line, &app.current()) {
             Ok(Some(command)) => {
-                if let Err(e) = app.dispatch(command) {
+                if let Err(e) = app.dispatch(enrich_add(&app, command)) {
                     println!("error: {e}");
                 }
             }

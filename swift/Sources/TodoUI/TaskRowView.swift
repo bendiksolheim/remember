@@ -33,9 +33,9 @@ public struct TaskRowView: SwiftUI.View {
                     .strikethrough(row.done)
                     .foregroundStyle(row.done ? .secondary : .primary)
                 if let label = row.dueLabel {
-                    Text(label)
-                        .font(.caption)
-                        .foregroundStyle(row.overdue ? Color.red : Color.secondary)
+                    // Overdue-red is a call to action; a completed task
+                    // needs none, regardless of when it was due.
+                    DueChip(label: label, tint: row.overdue && !row.done ? .red : .secondary)
                 }
             }
         }

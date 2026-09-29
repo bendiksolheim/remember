@@ -71,6 +71,7 @@ pub fn parse(line: &str, snapshot: &Snapshot) -> Result<Option<Command>, ParseEr
             Ok(Some(Command::Add {
                 title: rest.to_string(),
                 after: None,
+                due: None,
             }))
         }
         "done" => {
@@ -125,6 +126,7 @@ mod tests {
                 Command::Add {
                     title: title.to_string(),
                     after: None,
+                    due: None,
                 },
                 &clock,
                 &ids,
@@ -162,6 +164,7 @@ mod tests {
             Some(Command::Add {
                 title: "Buy milk".to_string(),
                 after: None,
+                due: None,
             })
         );
     }

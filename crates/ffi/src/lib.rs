@@ -26,6 +26,7 @@ pub enum Command {
     Add {
         title: String,
         after: Option<String>,
+        due: Option<i64>,
     },
     SetTitle {
         id: String,
@@ -70,6 +71,14 @@ pub struct TaskRow {
     pub due: Option<i64>,
     pub due_label: Option<String>,
     pub overdue: bool,
+}
+
+/// Result of `App::detect_due` — see its own doc comment.
+#[derive(uniffi::Record)]
+pub struct DueDetection {
+    pub stripped_title: String,
+    pub label: String,
+    pub due: i64,
 }
 
 #[derive(uniffi::Record)]
@@ -137,6 +146,27 @@ impl App {
 
     pub fn current(&self) -> Snapshot {
         convert::snapshot_from_core(&self.inner.current())
+    }
+
+    /// Sets the device's local UTC offset (seconds), used to compute
+    /// "today" for both `current()`'s due labels/overdue and `detect_due`.
+    /// The caller must call this at launch and again whenever the offset
+    /// might have changed — app foreground, and the system timezone-change
+    /// notification — since `App` has no way to read the platform's
+    /// timezone itself (Rust's own local-offset detection is unsound in a
+    /// multithreaded process, which is exactly why this is a caller-driven
+    /// setter rather than something computed on the Rust side).
+    pub fn set_local_offset_seconds(&self, offset_seconds: i32) {
+        self.inner.set_local_offset_seconds(offset_seconds);
+    }
+
+    /// Detects a due-date phrase ("today", "tomorrow", a weekday name, or
+    /// "dec 25") at the end of `text`, for a live quick-add badge. `None`
+    /// if `text` doesn't end in a recognized phrase.
+    pub fn detect_due(&self, text: String) -> Option<DueDetection> {
+        self.inner
+            .detect_due(&text)
+            .map(|d| convert::due_detection_from_core(&d))
     }
 
     pub fn flush(&self) -> Result<(), AppError> {

@@ -1,11 +1,13 @@
 //! All conversions between `todo-core` types and their UniFFI mirrors.
 //! Plain functions, no decisions — covered at 100%.
 
-use crate::{AppError, Command, Session, Snapshot, SyncError, SyncOutcome, TaskRow, View};
+use crate::{
+    AppError, Command, DueDetection, Session, Snapshot, SyncError, SyncOutcome, TaskRow, View,
+};
 
 pub fn command_to_core(command: Command) -> todo_core::Command {
     match command {
-        Command::Add { title, after } => todo_core::Command::Add { title, after },
+        Command::Add { title, after, due } => todo_core::Command::Add { title, after, due },
         Command::SetTitle { id, title } => todo_core::Command::SetTitle { id, title },
         Command::SetNotes { id, notes } => todo_core::Command::SetNotes { id, notes },
         Command::SetDone { id, done } => todo_core::Command::SetDone { id, done },
@@ -42,6 +44,14 @@ pub fn task_row_from_core(row: &todo_core::TaskRow) -> TaskRow {
         due: row.due,
         due_label: row.due_label.clone(),
         overdue: row.overdue,
+    }
+}
+
+pub fn due_detection_from_core(detection: &todo_core::DueDetection) -> DueDetection {
+    DueDetection {
+        stripped_title: detection.stripped_title.clone(),
+        label: detection.label.clone(),
+        due: detection.due,
     }
 }
 
@@ -108,14 +118,16 @@ mod tests {
         assert!(matches!(
             command_to_core(Command::Add {
                 title: "t".to_string(),
-                after: None
+                after: None,
+                due: Some(7)
             }),
-            todo_core::Command::Add { title, after: None } if title == "t"
+            todo_core::Command::Add { title, after: None, due: Some(7) } if title == "t"
         ));
         assert!(matches!(
             command_to_core(Command::Add {
                 title: "t".to_string(),
-                after: Some("x".to_string())
+                after: Some("x".to_string()),
+                due: None
             }),
             todo_core::Command::Add { after: Some(a), .. } if a == "x"
         ));
@@ -226,6 +238,18 @@ mod tests {
         assert_eq!(row.due, None);
         assert_eq!(row.due_label, None);
         assert!(!row.overdue);
+    }
+
+    #[test]
+    fn due_detection_converts_all_fields() {
+        let detection = due_detection_from_core(&todo_core::DueDetection {
+            stripped_title: "Buy milk".to_string(),
+            label: "Tomorrow".to_string(),
+            due: 86_400,
+        });
+        assert_eq!(detection.stripped_title, "Buy milk");
+        assert_eq!(detection.label, "Tomorrow");
+        assert_eq!(detection.due, 86_400);
     }
 
     #[test]

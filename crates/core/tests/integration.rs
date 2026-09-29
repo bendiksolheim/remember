@@ -5,6 +5,7 @@ fn add(doc: &mut Doc, clock: &FixedClock, ids: &SeqIdSource, title: &str) -> Str
         Command::Add {
             title: title.to_string(),
             after: None,
+            due: None,
         },
         clock,
         ids,
@@ -44,6 +45,7 @@ fn add_after_none_inserts_at_top_after_some_inserts_after() {
         Command::Add {
             title: "b".to_string(),
             after: Some(a),
+            due: None,
         },
         &clock,
         &ids,
@@ -68,6 +70,7 @@ fn add_after_unknown_id_is_not_found() {
             Command::Add {
                 title: "a".to_string(),
                 after: Some("nope".to_string()),
+                due: None,
             },
             &clock,
             &ids,
@@ -222,6 +225,7 @@ fn add_empty_after_trim_is_noop() {
         Command::Add {
             title: "   ".to_string(),
             after: None,
+            due: None,
         },
         &clock,
         &ids,
@@ -582,6 +586,7 @@ fn revision_strictly_increases_across_every_mutation() {
         Command::Add {
             title: "a".to_string(),
             after: None,
+            due: None,
         },
     );
     let id = doc.read(ViewFilter::All, &clock).rows[0].id.clone();
@@ -597,6 +602,7 @@ fn revision_strictly_increases_across_every_mutation() {
         Command::Add {
             title: "c".to_string(),
             after: None,
+            due: None,
         },
     );
     // A real (non-no-op) move: `id` is currently second, this brings it to

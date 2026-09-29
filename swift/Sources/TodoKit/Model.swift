@@ -85,6 +85,24 @@ public final class TodoModel {
     public func setView(_ view: View) { app.setView(view: view) }
     public func flush() { try? app.flush() }
 
+    /// Detects a due-date phrase ("today", "tomorrow", a weekday name, or
+    /// "dec 25") at the end of `text`, for quick-add's live badge. `nil` if
+    /// `text` doesn't end in a recognized phrase. Pure lookup — never
+    /// dispatches anything itself.
+    public func detectDue(_ text: String) -> DueDetection? {
+        app.detectDue(text: text)
+    }
+
+    /// Sets the device's local UTC offset, used by both `detectDue` and
+    /// every row's due label/overdue state. Call once at launch and again
+    /// whenever it might have changed — app foreground, and the system
+    /// timezone-change notification — since there's no way to observe this
+    /// from the Rust side (see `App.setLocalOffsetSeconds`'s own doc
+    /// comment for why).
+    public func setLocalOffsetSeconds() {
+        app.setLocalOffsetSeconds(offsetSeconds: Int32(TimeZone.current.secondsFromGMT()))
+    }
+
     /// `async`, not a plain blocking call: `SyncClient.signUp`/`signIn` are
     /// synchronous `reqwest::blocking` calls under the hood — unlike
     /// `syncNow`, nothing on the Rust side moves them off-thread, so this

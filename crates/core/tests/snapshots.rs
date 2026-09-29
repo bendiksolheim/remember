@@ -17,6 +17,7 @@ fn fixture() -> Doc {
         Command::Add {
             title: "Buy milk".to_string(),
             after: None,
+            due: None,
         },
         &clock,
         &ids,
@@ -27,6 +28,7 @@ fn fixture() -> Doc {
         Command::Add {
             title: "Write report".to_string(),
             after: None,
+            due: None,
         },
         &clock,
         &ids,
@@ -47,6 +49,7 @@ fn fixture() -> Doc {
         Command::Add {
             title: "Call dentist".to_string(),
             after: None,
+            due: None,
         },
         &clock,
         &ids,
@@ -67,6 +70,7 @@ fn fixture() -> Doc {
         Command::Add {
             title: "Pay rent".to_string(),
             after: None,
+            due: None,
         },
         &clock,
         &ids,
@@ -87,6 +91,7 @@ fn fixture() -> Doc {
         Command::Add {
             title: "Clean garage".to_string(),
             after: None,
+            due: None,
         },
         &clock,
         &ids,
@@ -107,6 +112,7 @@ fn fixture() -> Doc {
         Command::Add {
             title: "Submit taxes".to_string(),
             after: None,
+            due: None,
         },
         &clock,
         &ids,
@@ -168,7 +174,7 @@ fn snapshot_due_label_offsets() {
     ];
     let labels: Vec<(String, String)> = offsets
         .into_iter()
-        .map(|(name, due)| (name.to_string(), due_label(due, NOW)))
+        .map(|(name, due)| (name.to_string(), due_label(due, NOW, 0)))
         .collect();
     insta::assert_yaml_snapshot!(labels);
 }

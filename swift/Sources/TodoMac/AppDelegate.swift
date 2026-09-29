@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
         // there's no guarantee onAppear fires before the user's first
         // hotkey press.
         model.setView(.active)
+        model.setLocalOffsetSeconds()
 
         panel = SpotlightPanel(content: CaptureView(
             onDismiss: { [weak self] in self?.hide() },
@@ -60,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
         setUpStatusItem()
         registerLoginItemIfNeeded()
         observeSyncTriggers()
+        observeLocalOffsetTriggers()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -152,6 +154,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
             queue: nil
         ) { [weak self] _ in
             Task { @MainActor in self?.model.syncSoon() }
+        }
+    }
+
+    // MARK: - Local offset
+
+    /// Keeps the due-date day math (`detectDue`, every row's overdue/label)
+    /// aligned with the device's actual local timezone. Refreshed on the
+    /// same wake/active triggers `observeSyncTriggers` already watches —
+    /// both are "something about the world outside this app may have
+    /// changed" moments — plus the system's own timezone-change
+    /// notification, for a travelling Mac that never sleeps in between.
+    private func observeLocalOffsetTriggers() {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in self?.model.setLocalOffsetSeconds() }
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in self?.model.setLocalOffsetSeconds() }
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name.NSSystemTimeZoneDidChange,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in self?.model.setLocalOffsetSeconds() }
         }
     }
 

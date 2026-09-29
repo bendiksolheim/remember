@@ -24,6 +24,13 @@ struct CaptureView: SwiftUI.View {
     var onContentHeightChange: (CGFloat) -> Void
 
     @State private var input = ""
+    /// Live result of `TodoModel.detectDue` for `input`, re-checked on every
+    /// keystroke. `nil` means no recognized trailing phrase.
+    @State private var dueDetection: DueDetection?
+    /// Set when the user clicks the badge to reject a detection for this
+    /// input — cleared again on the next keystroke, so a fresh phrase is
+    /// never silently suppressed by an old dismissal.
+    @State private var dueDismissed = false
     /// Unifies the quick-add field and every row into one keyboard-focus
     /// chain: alt+j/alt+k walk `focusChain` (input first, then rows in
     /// display order) and wrap at both ends. `fileprivate`, not `private`,
@@ -79,13 +86,22 @@ struct CaptureView: SwiftUI.View {
 
     var body: some SwiftUI.View {
         VStack(spacing: 0) {
-            TextField("Add a task…", text: $input)
-                .textFieldStyle(.plain)
-                .font(.system(size: 22))
-                .padding(.horizontal, 20)
-                .padding(.vertical, 16)
-                .focused($focus, equals: .input)
-                .onSubmit(addTask)
+            HStack(spacing: 8) {
+                TextField("Add a task…", text: $input)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 22))
+                    .focused($focus, equals: .input)
+                    .onSubmit(addTask)
+                    .onChange(of: input) { _, newValue in
+                        dueDetection = newValue.isEmpty ? nil : model.detectDue(newValue)
+                        dueDismissed = false
+                    }
+                if let detection = dueDetection, !dueDismissed {
+                    CaptureDueBadge(label: detection.label) { dueDismissed = true }
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
 
             if !displayRows.isEmpty {
                 Divider()
@@ -315,8 +331,14 @@ struct CaptureView: SwiftUI.View {
     }
 
     private func addTask() {
-        model.dispatch(.add(title: input, after: nil))
+        if let detection = dueDetection, !dueDismissed {
+            model.dispatch(.add(title: detection.strippedTitle, after: nil, due: detection.due))
+        } else {
+            model.dispatch(.add(title: input, after: nil, due: nil))
+        }
         input = ""
+        dueDetection = nil
+        dueDismissed = false
     }
 
     private func toggle(id: String) {
@@ -433,6 +455,12 @@ private struct CaptureTaskRow: SwiftUI.View {
             }
 
             Spacer()
+
+            if let label = row.dueLabel, !isEditing {
+                // Overdue-red is a call to action; a completed task needs
+                // none, regardless of when it was due.
+                CaptureDueChip(label: label, tint: row.overdue && !completed ? .red : .secondary)
+            }
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 8)
@@ -440,5 +468,41 @@ private struct CaptureTaskRow: SwiftUI.View {
         .contentShape(Rectangle())
         .onTapGesture(perform: onFocusRequest)
         .animation(.easeOut(duration: 0.2), value: completed)
+    }
+}
+
+/// The visual due-date chip — calendar icon on a capsule background. Used
+/// as plain decoration on task rows, and (wrapped in `CaptureDueBadge`
+/// below) as the clickable quick-add detection indicator, so a due date
+/// looks the same wherever it's shown.
+private struct CaptureDueChip: SwiftUI.View {
+    let label: String
+    var tint: Color = .accentColor
+
+    var body: some SwiftUI.View {
+        Label(label, systemImage: "calendar")
+            .font(.caption)
+            .foregroundStyle(tint)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(tint.opacity(0.2), in: Capsule())
+    }
+}
+
+/// A clickable `CaptureDueChip` showing a live-detected due date, for the
+/// quick-add field. Clicking it calls `onDismiss` — the caller is
+/// responsible for clearing the detection state that produced `label`.
+private struct CaptureDueBadge: SwiftUI.View {
+    let label: String
+    let onDismiss: () -> Void
+
+    var body: some SwiftUI.View {
+        Button(action: onDismiss) {
+            CaptureDueChip(label: label)
+        }
+        .buttonStyle(.plain)
+        // Not part of the alt+j/alt+k row-focus chain or Tab order — it's a
+        // click-only escape hatch, not a navigable control.
+        .focusable(false)
     }
 }

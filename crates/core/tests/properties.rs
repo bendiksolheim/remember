@@ -122,6 +122,7 @@ fn replay_one(
                 Command::Add {
                     title: title.clone(),
                     after,
+                    due: None,
                 },
                 clock,
                 ids_src,
@@ -218,7 +219,12 @@ fn content(snap: &Snapshot) -> (Vec<TaskRow>, u32, ViewFilter) {
 fn arb_raw_command() -> impl Strategy<Value = Command> {
     let id = "[a-zA-Z0-9]{0,6}";
     prop_oneof![
-        (".*", proptest::option::of(id)).prop_map(|(title, after)| Command::Add { title, after }),
+        (
+            ".*",
+            proptest::option::of(id),
+            proptest::option::of(any::<i64>())
+        )
+            .prop_map(|(title, after, due)| Command::Add { title, after, due }),
         (id, ".*").prop_map(|(id, title)| Command::SetTitle { id, title }),
         (id, ".*").prop_map(|(id, notes)| Command::SetNotes { id, notes }),
         (id, any::<bool>()).prop_map(|(id, done)| Command::SetDone { id, done }),

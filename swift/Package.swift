@@ -25,7 +25,9 @@ let package = Package(
             ]
         ),
         .target(name: "TodoUI", dependencies: ["TodoKit"]),
-        .target(name: "TodoApp", dependencies: ["TodoUI"]),
+        // TodoKit isn't just transitive here either (see the same note on
+        // TodoMac below): TodoIOSApp.swift constructs TodoModel directly.
+        .target(name: "TodoApp", dependencies: ["TodoUI", "TodoKit"]),
         // TodoKit isn't just transitive here: AppDelegate.swift constructs
         // TodoModel directly, and SwiftPM requires importing a module to be
         // a direct dependency of the target, not just of one of its deps.
