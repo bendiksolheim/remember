@@ -3,7 +3,7 @@ use std::thread;
 use std::time::Duration;
 
 use tempfile::TempDir;
-use todo_core::{App, Command, CoreError, Store, ViewFilter};
+use todo_core::{App, Command, CoreError, ListFilter, Store, ViewFilter};
 
 fn db_path(dir: &TempDir, name: &str) -> String {
     dir.path().join(name).to_str().unwrap().to_string()
@@ -11,10 +11,11 @@ fn db_path(dir: &TempDir, name: &str) -> String {
 
 fn add(app: &App, title: &str) {
     app.dispatch(Command::Add {
-        title: title.to_string(),
-        after: None,
-        due: None,
-    })
+                title: title.to_string(),
+                after: None,
+                due: None,
+                list_id: None,
+            })
     .unwrap();
 }
 
@@ -265,4 +266,162 @@ fn subscribe_fires_immediately_then_on_every_dispatch() {
     add(&app, "a");
     add(&app, "b");
     assert_eq!(*seen.lock().unwrap(), vec![0, 1, 2]);
+}
+
+#[test]
+fn fresh_store_has_no_current_or_capture_list() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::open(&db_path(&dir, "todo.sqlite3")).unwrap();
+    assert_eq!(store.load_current_list().unwrap(), None);
+    assert_eq!(store.load_capture_list().unwrap(), None);
+}
+
+#[test]
+fn current_list_round_trips_and_can_be_overwritten() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::open(&db_path(&dir, "todo.sqlite3")).unwrap();
+
+    store.save_current_list(Some("work")).unwrap();
+    assert_eq!(store.load_current_list().unwrap(), Some("work".to_string()));
+
+    store.save_current_list(Some("personal")).unwrap();
+    assert_eq!(
+        store.load_current_list().unwrap(),
+        Some("personal".to_string())
+    );
+}
+
+#[test]
+fn current_list_of_none_deletes_the_stored_value() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::open(&db_path(&dir, "todo.sqlite3")).unwrap();
+
+    store.save_current_list(Some("work")).unwrap();
+    store.save_current_list(None).unwrap();
+    assert_eq!(store.load_current_list().unwrap(), None);
+}
+
+#[test]
+fn capture_list_round_trips_and_can_be_overwritten() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::open(&db_path(&dir, "todo.sqlite3")).unwrap();
+
+    store.save_capture_list("work").unwrap();
+    assert_eq!(store.load_capture_list().unwrap(), Some("work".to_string()));
+
+    store.save_capture_list("personal").unwrap();
+    assert_eq!(
+        store.load_capture_list().unwrap(),
+        Some("personal".to_string())
+    );
+}
+
+#[test]
+fn corrupt_current_list_blob_is_storage_error() {
+    let dir = TempDir::new().unwrap();
+    let path = db_path(&dir, "todo.sqlite3");
+    {
+        let _store = Store::open(&path).unwrap();
+    }
+
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES ('current_list', ?1)",
+        (vec![0xFF, 0xFE],), // not valid UTF-8
+    )
+    .unwrap();
+    drop(conn);
+
+    let err = Store::open(&path)
+        .unwrap()
+        .load_current_list()
+        .err()
+        .unwrap();
+    assert!(matches!(err, CoreError::Storage(_)));
+}
+
+#[test]
+fn set_current_list_persists_across_reopen() {
+    let dir = TempDir::new().unwrap();
+    let path = db_path(&dir, "todo.sqlite3");
+    {
+        let app = App::open(&path).unwrap();
+        app.set_current_list(ListFilter::List("work".to_string()))
+            .unwrap();
+    }
+    let app2 = App::open(&path).unwrap();
+    assert_eq!(
+        app2.current().current_list,
+        ListFilter::List("work".to_string())
+    );
+}
+
+#[test]
+fn set_current_list_to_all_is_also_persisted() {
+    let dir = TempDir::new().unwrap();
+    let path = db_path(&dir, "todo.sqlite3");
+    {
+        let app = App::open(&path).unwrap();
+        app.set_current_list(ListFilter::List("work".to_string()))
+            .unwrap();
+        app.set_current_list(ListFilter::All).unwrap();
+    }
+    let app2 = App::open(&path).unwrap();
+    assert_eq!(app2.current().current_list, ListFilter::All);
+}
+
+#[test]
+fn set_current_list_notifies_existing_subscribers() {
+    let dir = TempDir::new().unwrap();
+    let app = App::open(&db_path(&dir, "todo.sqlite3")).unwrap();
+
+    let seen: Arc<Mutex<Vec<ListFilter>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_clone = Arc::clone(&seen);
+    app.subscribe(move |snap| seen_clone.lock().unwrap().push(snap.current_list.clone()));
+
+    app.set_current_list(ListFilter::List("work".to_string()))
+        .unwrap();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![ListFilter::All, ListFilter::List("work".to_string())]
+    );
+}
+
+/// A new task always needs one concrete destination list — switching the
+/// *view* to "All" must not leave captures with nowhere to land. See
+/// `capture_list_id`'s own doc comment on why it tracks the last concrete
+/// list independently of `current_list`.
+#[test]
+fn capture_sticks_to_the_last_concrete_list_even_while_viewing_all() {
+    let dir = TempDir::new().unwrap();
+    let app = App::open(&db_path(&dir, "todo.sqlite3")).unwrap();
+
+    app.dispatch(Command::AddList {
+        name: "Work".to_string(),
+        after: None,
+    })
+    .unwrap();
+    let work = app.current().lists[0].id.clone();
+
+    app.set_current_list(ListFilter::List(work.clone()))
+        .unwrap();
+    app.set_current_list(ListFilter::All).unwrap();
+
+    add(&app, "a");
+    let row = app
+        .current()
+        .rows
+        .iter()
+        .find(|r| r.title == "a")
+        .unwrap()
+        .clone();
+    assert_eq!(row.list_id, work);
+}
+
+#[test]
+fn capture_list_defaults_to_the_default_list_on_a_fresh_install() {
+    let dir = TempDir::new().unwrap();
+    let app = App::open(&db_path(&dir, "todo.sqlite3")).unwrap();
+    add(&app, "a");
+    assert_eq!(app.current().rows[0].list_id, "default");
 }

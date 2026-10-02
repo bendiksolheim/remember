@@ -72,6 +72,7 @@ pub fn parse(line: &str, snapshot: &Snapshot) -> Result<Option<Command>, ParseEr
                 title: rest.to_string(),
                 after: None,
                 due: None,
+                list_id: None,
             }))
         }
         "done" => {
@@ -115,7 +116,7 @@ pub fn parse(line: &str, snapshot: &Snapshot) -> Result<Option<Command>, ParseEr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use todo_core::{Doc, FixedClock, SeqIdSource, ViewFilter};
+    use todo_core::{Doc, FixedClock, ListFilter, SeqIdSource, ViewFilter};
 
     fn snapshot_with_tasks(titles: &[&str]) -> Snapshot {
         let mut doc = Doc::new(1).unwrap();
@@ -124,16 +125,17 @@ mod tests {
         for title in titles {
             doc.apply(
                 Command::Add {
-                    title: title.to_string(),
-                    after: None,
-                    due: None,
-                },
+                title: title.to_string(),
+                after: None,
+                due: None,
+                list_id: None,
+            },
                 &clock,
                 &ids,
             )
             .unwrap();
         }
-        doc.read(ViewFilter::All, &clock)
+        doc.read(ViewFilter::All, ListFilter::All, &clock)
     }
 
     fn empty_snapshot() -> Snapshot {
@@ -165,6 +167,7 @@ mod tests {
                 title: "Buy milk".to_string(),
                 after: None,
                 due: None,
+                list_id: None,
             })
         );
     }

@@ -1,5 +1,5 @@
 use crate::civil;
-use crate::command::ViewFilter;
+use crate::command::{ListFilter, ViewFilter};
 
 /// What crosses the FFI boundary. Plain data: already filtered, already
 /// sorted, already formatted. Swift does no computation.
@@ -12,12 +12,28 @@ pub struct TaskRow {
     pub due: Option<i64>,
     pub due_label: Option<String>,
     pub overdue: bool,
+    pub list_id: String,
+    /// Denormalized from `lists` so a cross-list ("All") view can render
+    /// which list a row belongs to without Swift ever joining `list_id`
+    /// against the roster itself.
+    pub list_name: String,
+}
+
+/// One entry in the `lists` roster, in sidebar display order. Always at
+/// least one row — `Doc` guarantees a list can never be deleted down to
+/// zero (see `Doc::apply`'s `DeleteList` handling).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ListRow {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Snapshot {
     pub rows: Vec<TaskRow>,
     pub view: ViewFilter,
+    pub current_list: ListFilter,
+    pub lists: Vec<ListRow>,
     pub active_count: u32,
     pub can_undo: bool,
     pub can_redo: bool,
@@ -67,6 +83,13 @@ pub(crate) fn matches_filter(done: bool, view: ViewFilter) -> bool {
         ViewFilter::All => true,
         ViewFilter::Active => !done,
         ViewFilter::Completed => done,
+    }
+}
+
+pub(crate) fn matches_list_filter(list_id: &str, filter: &ListFilter) -> bool {
+    match filter {
+        ListFilter::All => true,
+        ListFilter::List(id) => id == list_id,
     }
 }
 
@@ -163,5 +186,18 @@ mod tests {
     fn matches_filter_completed_hides_active() {
         assert!(matches_filter(true, ViewFilter::Completed));
         assert!(!matches_filter(false, ViewFilter::Completed));
+    }
+
+    #[test]
+    fn matches_list_filter_all_shows_every_list() {
+        assert!(matches_list_filter("a", &ListFilter::All));
+        assert!(matches_list_filter("b", &ListFilter::All));
+    }
+
+    #[test]
+    fn matches_list_filter_list_shows_only_that_list() {
+        let filter = ListFilter::List("a".to_string());
+        assert!(matches_list_filter("a", &filter));
+        assert!(!matches_list_filter("b", &filter));
     }
 }

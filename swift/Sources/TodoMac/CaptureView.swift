@@ -9,10 +9,13 @@ import TodoKit
 // unverified since there's no compiler in this container.
 
 /// The entire macOS UI for v1: a quick-add field, the live incomplete task
-/// list, and inline title editing ("e" on the focused row), hosted inside
-/// `SpotlightPanel`. Deleting and reordering are still out of scope here --
-/// those remain reachable only via `TodoUI`'s `TaskListView`, which iOS
-/// still uses but this target no longer wires up.
+/// list, inline title editing ("e" on the focused row), reordering the
+/// focused row (alt+shift+j/alt+shift+k), and switching the sticky current
+/// list (`ListSwitcher`). Deleting is still out of scope here -- that
+/// remains reachable only via `TodoUI`'s `TaskListView`, which iOS still
+/// uses but this target no longer wires up. Moving an existing task to a
+/// different list is likewise iOS-only (`TaskDetailView`) -- this panel
+/// only ever shows one list at a time, so there's nowhere to drop it.
 struct CaptureView: SwiftUI.View {
     @Environment(TodoModel.self) private var model
     var onDismiss: () -> Void
@@ -87,6 +90,7 @@ struct CaptureView: SwiftUI.View {
     var body: some SwiftUI.View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
+                ListSwitcher()
                 TextField("Add a task…", text: $input)
                     .textFieldStyle(.plain)
                     .font(.system(size: 22))
@@ -193,19 +197,26 @@ struct CaptureView: SwiftUI.View {
     private func installOptionNavMonitor() {
         guard optionNavMonitor == nil else { return }
         optionNavMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.option] else {
-                return event
-            }
-            switch event.charactersIgnoringModifiers {
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard flags == [.option] || flags == [.option, .shift] else { return event }
+            // `charactersIgnoringModifiers` honors Shift (only Option is
+            // stripped), so alt+shift+j arrives as "J" -- lowercase first to
+            // key the switch on the letter alone.
+            let isReorder = flags.contains(.shift)
+            switch event.charactersIgnoringModifiers?.lowercased() {
             case "j":
                 // Still swallowed (returns nil) while editing, not just
                 // skipped -- letting the event through would have AppKit
                 // insert its dead-key/accented character into the field
                 // being edited instead of doing nothing.
-                if editingRowID == nil { moveFocus(by: 1) }
+                if editingRowID == nil {
+                    isReorder ? moveFocusedRow(by: 1) : moveFocus(by: 1)
+                }
                 return nil
             case "k":
-                if editingRowID == nil { moveFocus(by: -1) }
+                if editingRowID == nil {
+                    isReorder ? moveFocusedRow(by: -1) : moveFocus(by: -1)
+                }
                 return nil
             default:
                 return event
@@ -238,6 +249,37 @@ struct CaptureView: SwiftUI.View {
         let currentIndex = focus.flatMap { chain.firstIndex(of: $0) } ?? 0
         let nextIndex = (currentIndex + delta + chain.count) % chain.count
         focus = chain[nextIndex]
+    }
+
+    /// alt+shift+j/alt+shift+k: swap the focused row with its adjacent
+    /// *active* neighbor (ghosts and the input field aren't real order
+    /// entries, so the `.row` match plus `rows.firstIndex` already excludes
+    /// them -- no separate ghost/input check needed). Clamps at the ends
+    /// rather than wrapping like `moveFocus` does: sending a row to the
+    /// opposite end of the list on an edge press would be a much bigger,
+    /// easier-to-regret jump than just moving focus there.
+    ///
+    /// `Move`'s `after` is relational (todo-core resolves it directly
+    /// against its own order, same as the CLI's `mv` does against a
+    /// snapshot) -- here that means "the id `rows` already puts right where
+    /// the focused row should land": moving down lands right after the
+    /// neighbor being passed, moving up lands right after whatever was two
+    /// slots up (or at the front, if the neighbor was already first).
+    private func moveFocusedRow(by delta: Int) {
+        guard case .row(let id)? = focus,
+            let rows = model.snapshot?.rows,
+            let index = rows.firstIndex(where: { $0.id == id })
+        else { return }
+        let neighborIndex = index + delta
+        guard rows.indices.contains(neighborIndex) else { return }
+
+        let after: String?
+        if delta > 0 {
+            after = rows[neighborIndex].id
+        } else {
+            after = neighborIndex > 0 ? rows[neighborIndex - 1].id : nil
+        }
+        model.dispatch(.move(id: id, after: after))
     }
 
     private func toggleFocusedRow() {
@@ -332,9 +374,9 @@ struct CaptureView: SwiftUI.View {
 
     private func addTask() {
         if let detection = dueDetection, !dueDismissed {
-            model.dispatch(.add(title: detection.strippedTitle, after: nil, due: detection.due))
+            model.dispatch(.add(title: detection.strippedTitle, after: nil, due: detection.due, listId: nil))
         } else {
-            model.dispatch(.add(title: input, after: nil, due: nil))
+            model.dispatch(.add(title: input, after: nil, due: nil, listId: nil))
         }
         input = ""
         dueDetection = nil
@@ -411,6 +453,49 @@ struct CaptureView: SwiftUI.View {
             ghostAnchors[id] = nil
         }
         revivedIDs.subtract(confirmed)
+    }
+}
+
+/// Inline control at the top of the capture panel for switching the sticky
+/// current list -- this target's only way to change which list a capture
+/// lands in, since it has no other window (see `SettingsWindowController`'s
+/// Lists pane for creating/renaming/deleting lists instead). Lists are
+/// shown in sidebar order from `snapshot.lists`; "All" browses every list's
+/// tasks here without changing the capture destination -- the last
+/// concrete list picked stays sticky even while viewing "All" (see
+/// `TodoModel.setCurrentList`'s own doc comment).
+private struct ListSwitcher: SwiftUI.View {
+    @Environment(TodoModel.self) private var model
+
+    var body: some SwiftUI.View {
+        Menu {
+            Button("All") { model.setCurrentList(.all) }
+            if let lists = model.snapshot?.lists, !lists.isEmpty {
+                Divider()
+                ForEach(lists, id: \.id) { list in
+                    Button(list.name) { model.setCurrentList(.list(id: list.id)) }
+                }
+            }
+        } label: {
+            Text(currentLabel)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        // Click-only, like `CaptureDueBadge` -- not part of the alt+j/alt+k
+        // row-focus chain or Tab order.
+        .focusable(false)
+    }
+
+    private var currentLabel: String {
+        guard let snapshot = model.snapshot else { return "All" }
+        switch snapshot.currentList {
+        case .all:
+            return "All"
+        case .list(let id):
+            return snapshot.lists.first(where: { $0.id == id })?.name ?? "All"
+        }
     }
 }
 

@@ -23,10 +23,13 @@ pub fn build_info() -> String {
 
 #[derive(uniffi::Enum)]
 pub enum Command {
+    /// `list_id: None` means "whichever list is currently active" — see
+    /// `todo_core::Command::Add`'s own doc comment.
     Add {
         title: String,
         after: Option<String>,
         due: Option<i64>,
+        list_id: Option<String>,
     },
     SetTitle {
         id: String,
@@ -51,6 +54,25 @@ pub enum Command {
     Delete {
         id: String,
     },
+    SetList {
+        id: String,
+        list_id: String,
+    },
+    AddList {
+        name: String,
+        after: Option<String>,
+    },
+    RenameList {
+        id: String,
+        name: String,
+    },
+    DeleteList {
+        id: String,
+    },
+    MoveList {
+        id: String,
+        after: Option<String>,
+    },
     Undo,
     Redo,
 }
@@ -62,6 +84,20 @@ pub enum View {
     Completed,
 }
 
+/// Which list(s) a `Snapshot` reflects. Mirrors `todo_core::ListFilter`.
+#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
+pub enum ListFilter {
+    All,
+    List { id: String },
+}
+
+/// One entry in the `lists` roster — see `todo_core::ListRow`.
+#[derive(uniffi::Record, Clone)]
+pub struct ListRow {
+    pub id: String,
+    pub name: String,
+}
+
 #[derive(uniffi::Record)]
 pub struct TaskRow {
     pub id: String,
@@ -71,6 +107,8 @@ pub struct TaskRow {
     pub due: Option<i64>,
     pub due_label: Option<String>,
     pub overdue: bool,
+    pub list_id: String,
+    pub list_name: String,
 }
 
 /// Result of `App::detect_due` — see its own doc comment.
@@ -85,6 +123,8 @@ pub struct DueDetection {
 pub struct Snapshot {
     pub rows: Vec<TaskRow>,
     pub view: View,
+    pub current_list: ListFilter,
+    pub lists: Vec<ListRow>,
     pub active_count: u32,
     pub can_undo: bool,
     pub can_redo: bool,
@@ -142,6 +182,15 @@ impl App {
 
     pub fn set_view(&self, view: View) {
         self.inner.set_view(convert::view_to_core(view));
+    }
+
+    /// Switches which list(s) `current()` reads, and — for a concrete list
+    /// — the sticky destination new captures land in. See
+    /// `todo_core::App::set_current_list`'s own doc comment.
+    pub fn set_current_list(&self, list: ListFilter) -> Result<(), AppError> {
+        self.inner
+            .set_current_list(convert::list_filter_to_core(list))
+            .map_err(convert::app_error_from_core)
     }
 
     pub fn current(&self) -> Snapshot {

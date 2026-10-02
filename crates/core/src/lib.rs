@@ -17,9 +17,9 @@ mod store;
 pub use clock::{Clock, IdSource, SystemClock, UuidSource};
 #[cfg(any(test, feature = "testing"))]
 pub use clock::{FixedClock, SeqIdSource};
-pub use command::{Command, ViewFilter};
+pub use command::{Command, ListFilter, ViewFilter};
 pub use doc::Doc;
-pub use snapshot::{DueDetection, Snapshot, TaskRow};
+pub use snapshot::{DueDetection, ListRow, Snapshot, TaskRow};
 pub use store::Store;
 
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -44,6 +44,15 @@ fn lock<'a, T>(mutex: &'a Mutex<T>) -> MutexGuard<'a, T> {
 struct AppState {
     doc: Doc,
     view: ViewFilter,
+    /// Which list(s) `current()` reads — can be `ListFilter::All`, unlike
+    /// `capture_list_id` below.
+    current_list: ListFilter,
+    /// The concrete list new captures land in — tracked separately from
+    /// `current_list` because that can be "All", and a new task always
+    /// needs one real destination list. Updated whenever `set_current_list`
+    /// is given a concrete list, left alone when it's given "All". See
+    /// `Store::load_capture_list`'s doc comment.
+    capture_list_id: String,
 }
 
 type Listener = Arc<dyn Fn(&Snapshot) + Send + Sync>;
@@ -81,11 +90,20 @@ impl App {
             Some(bytes) => Doc::load(peer_id, &bytes)?,
             None => Doc::new(peer_id)?,
         };
+        let current_list = match store.load_current_list()? {
+            Some(id) => ListFilter::List(id),
+            None => ListFilter::All,
+        };
+        let capture_list_id = store
+            .load_capture_list()?
+            .unwrap_or_else(|| doc::DEFAULT_LIST_ID.to_string());
 
         let shared = Arc::new(Shared {
             state: Mutex::new(AppState {
                 doc,
                 view: ViewFilter::default(),
+                current_list,
+                capture_list_id,
             }),
             store,
             clock: Arc::new(SystemClock),
@@ -119,14 +137,37 @@ impl App {
     }
 
     pub fn dispatch(&self, command: Command) -> Result<(), CoreError> {
-        lock(&self.shared.state).doc.apply(
-            command,
-            self.shared.clock.as_ref(),
-            self.shared.ids.as_ref(),
-        )?;
+        let mut state = lock(&self.shared.state);
+        let command = Self::resolve_capture_list(command, &state.capture_list_id);
+        state
+            .doc
+            .apply(command, self.shared.clock.as_ref(), self.shared.ids.as_ref())?;
+        drop(state);
         *lock(&self.shared.dirty_since) = Some(Instant::now());
         self.notify();
         Ok(())
+    }
+
+    /// Fills in `Command::Add`'s `list_id` with the sticky current capture
+    /// list when the caller didn't specify one — the one piece of "which
+    /// list is this app currently pointed at" business logic, kept here so
+    /// every caller (CLI, Swift) gets it for free rather than reimplementing
+    /// it per platform.
+    fn resolve_capture_list(command: Command, capture_list_id: &str) -> Command {
+        match command {
+            Command::Add {
+                title,
+                after,
+                due,
+                list_id: None,
+            } => Command::Add {
+                title,
+                after,
+                due,
+                list_id: Some(capture_list_id.to_string()),
+            },
+            other => other,
+        }
     }
 
     /// Registers `listener` and fires it immediately with the current
@@ -148,6 +189,30 @@ impl App {
     pub fn set_view(&self, view: ViewFilter) {
         lock(&self.shared.state).view = view;
         self.notify();
+    }
+
+    /// Switches which list(s) `current()` reads, persisting the choice (see
+    /// `Store::load_current_list`) so it survives a restart. When `list` is
+    /// a concrete list, also updates the sticky capture destination — see
+    /// `capture_list_id`'s own doc comment for why "All" doesn't.
+    pub fn set_current_list(&self, list: ListFilter) -> Result<(), CoreError> {
+        self.shared.store.save_current_list(match &list {
+            ListFilter::All => None,
+            ListFilter::List(id) => Some(id.as_str()),
+        })?;
+        if let ListFilter::List(id) = &list {
+            self.shared.store.save_capture_list(id)?;
+        }
+
+        let mut state = lock(&self.shared.state);
+        if let ListFilter::List(id) = &list {
+            state.capture_list_id = id.clone();
+        }
+        state.current_list = list;
+        drop(state);
+
+        self.notify();
+        Ok(())
     }
 
     /// Sets the local UTC offset (seconds) used to compute "today" for both
@@ -185,7 +250,9 @@ impl App {
 
     pub fn current(&self) -> Snapshot {
         let state = lock(&self.shared.state);
-        state.doc.read(state.view, self.shared.clock.as_ref())
+        state
+            .doc
+            .read(state.view, state.current_list.clone(), self.shared.clock.as_ref())
     }
 
     pub fn flush(&self) -> Result<(), CoreError> {

@@ -1,6 +1,6 @@
 ---
 source: crates/core/tests/snapshots.rs
-expression: "doc.read(ViewFilter::Completed, &clock)"
+expression: "doc.read(ViewFilter::Completed, ListFilter::All, &clock)"
 ---
 rows:
   - id: "5"
@@ -10,6 +10,8 @@ rows:
     due: 2592000
     due_label: 31 Jan
     overdue: false
+    list_id: default
+    list_name: Tasks
   - id: "4"
     title: Clean garage
     notes: ""
@@ -17,7 +19,13 @@ rows:
     due: ~
     due_label: ~
     overdue: false
+    list_id: default
+    list_name: Tasks
 view: Completed
+current_list: All
+lists:
+  - id: default
+    name: Tasks
 active_count: 4
 can_undo: true
 can_redo: false

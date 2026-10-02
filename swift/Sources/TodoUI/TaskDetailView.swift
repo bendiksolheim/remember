@@ -28,6 +28,14 @@ public struct TaskDetailView: SwiftUI.View {
             if hasDue {
                 DatePicker("Due", selection: $due, displayedComponents: .date)
             }
+            // The one surface that can re-categorize a task after the fact
+            // — Mac's capture panel only ever shows one list at a time, so
+            // moving an existing task between lists isn't reachable there.
+            Picker("List", selection: listBinding) {
+                ForEach(model.snapshot?.lists ?? [], id: \.id) { list in
+                    Text(list.name).tag(list.id)
+                }
+            }
         }
         .navigationTitle(row.title)
         .onChange(of: title) { _, newValue in
@@ -43,5 +51,12 @@ public struct TaskDetailView: SwiftUI.View {
             guard hasDue else { return }
             model.dispatch(.setDue(id: row.id, due: Int64(newValue.timeIntervalSince1970)))
         }
+    }
+
+    private var listBinding: Binding<String> {
+        Binding(
+            get: { row.listId },
+            set: { model.dispatch(.setList(id: row.id, listId: $0)) }
+        )
     }
 }

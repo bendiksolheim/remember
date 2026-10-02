@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use proptest::prelude::*;
-use todo_core::{Command, Doc, FixedClock, IdSource, Snapshot, TaskRow, ViewFilter};
+use todo_core::{Command, Doc, FixedClock, IdSource, ListFilter, Snapshot, TaskRow, ViewFilter};
 
 /// Deterministic, per-peer-unique id source. `SeqIdSource` alone would let
 /// two independently-generated peer sequences collide on the same ids
@@ -123,12 +123,13 @@ fn replay_one(
                     title: title.clone(),
                     after,
                     due: None,
+                    list_id: None,
                 },
                 clock,
                 ids_src,
             )
             .unwrap();
-            let snap = doc.read(ViewFilter::All, clock);
+            let snap = doc.read(ViewFilter::All, ListFilter::All, clock);
             // An empty/whitespace-only title is a no-op (see apply_add), so
             // there may be no new row to find here.
             if let Some(new_id) = snap
@@ -222,15 +223,26 @@ fn arb_raw_command() -> impl Strategy<Value = Command> {
         (
             ".*",
             proptest::option::of(id),
-            proptest::option::of(any::<i64>())
+            proptest::option::of(any::<i64>()),
+            proptest::option::of(id)
         )
-            .prop_map(|(title, after, due)| Command::Add { title, after, due }),
+            .prop_map(|(title, after, due, list_id)| Command::Add {
+                title,
+                after,
+                due,
+                list_id
+            }),
         (id, ".*").prop_map(|(id, title)| Command::SetTitle { id, title }),
         (id, ".*").prop_map(|(id, notes)| Command::SetNotes { id, notes }),
         (id, any::<bool>()).prop_map(|(id, done)| Command::SetDone { id, done }),
         (id, proptest::option::of(any::<i64>())).prop_map(|(id, due)| Command::SetDue { id, due }),
         (id, proptest::option::of(id)).prop_map(|(id, after)| Command::Move { id, after }),
         id.prop_map(|id| Command::Delete { id }),
+        (id, id).prop_map(|(id, list_id)| Command::SetList { id, list_id }),
+        (".*", proptest::option::of(id)).prop_map(|(name, after)| Command::AddList { name, after }),
+        (id, ".*").prop_map(|(id, name)| Command::RenameList { id, name }),
+        id.prop_map(|id| Command::DeleteList { id }),
+        (id, proptest::option::of(id)).prop_map(|(id, after)| Command::MoveList { id, after }),
         Just(Command::Undo),
         Just(Command::Redo),
     ]
@@ -261,8 +273,8 @@ proptest! {
         merged_via_b.import_updates(&updates_a).unwrap();
 
         prop_assert_eq!(
-            content(&merged_via_a.read(ViewFilter::All, &clock)),
-            content(&merged_via_b.read(ViewFilter::All, &clock))
+            content(&merged_via_a.read(ViewFilter::All, ListFilter::All, &clock)),
+            content(&merged_via_b.read(ViewFilter::All, ListFilter::All, &clock))
         );
     }
 
@@ -277,9 +289,9 @@ proptest! {
 
         let mut target = Doc::new(2).unwrap();
         target.import_updates(&updates).unwrap();
-        let once = content(&target.read(ViewFilter::All, &clock));
+        let once = content(&target.read(ViewFilter::All, ListFilter::All, &clock));
         target.import_updates(&updates).unwrap();
-        let twice = content(&target.read(ViewFilter::All, &clock));
+        let twice = content(&target.read(ViewFilter::All, ListFilter::All, &clock));
         prop_assert_eq!(once, twice);
     }
 
@@ -306,8 +318,8 @@ proptest! {
         order2.import_updates(&updates_a).unwrap();
 
         prop_assert_eq!(
-            content(&order1.read(ViewFilter::All, &clock)),
-            content(&order2.read(ViewFilter::All, &clock))
+            content(&order1.read(ViewFilter::All, ListFilter::All, &clock)),
+            content(&order2.read(ViewFilter::All, ListFilter::All, &clock))
         );
     }
 
@@ -318,10 +330,10 @@ proptest! {
         let ids_src = PrefixedIds::new("a");
         let mut doc = Doc::new(1).unwrap();
         replay(&ops, &mut doc, &clock, &ids_src);
-        let before = content(&doc.read(ViewFilter::All, &clock));
+        let before = content(&doc.read(ViewFilter::All, ListFilter::All, &clock));
         let bytes = doc.export_snapshot().unwrap();
         let reloaded = Doc::load(1, &bytes).unwrap();
-        let after = content(&reloaded.read(ViewFilter::All, &clock));
+        let after = content(&reloaded.read(ViewFilter::All, ListFilter::All, &clock));
         prop_assert_eq!(before, after);
     }
 
@@ -344,7 +356,7 @@ proptest! {
         let ids_src = PrefixedIds::new("a");
         let mut doc = Doc::new(1).unwrap();
         replay(&ops, &mut doc, &clock, &ids_src);
-        let snap = doc.read(ViewFilter::All, &clock);
+        let snap = doc.read(ViewFilter::All, ListFilter::All, &clock);
         let expected = snap.rows.iter().filter(|r| !r.done).count() as u32;
         prop_assert_eq!(snap.active_count, expected);
     }
@@ -360,9 +372,9 @@ proptest! {
         let mut doc = Doc::new(1).unwrap();
         let mut known = replay(&ops, &mut doc, &clock, &ids_src);
 
-        let before = content(&doc.read(ViewFilter::All, &clock));
+        let before = content(&doc.read(ViewFilter::All, ListFilter::All, &clock));
         let applied = replay_one(&last, &mut doc, &clock, &ids_src, &mut known);
-        let changed = applied && content(&doc.read(ViewFilter::All, &clock)) != before;
+        let changed = applied && content(&doc.read(ViewFilter::All, ListFilter::All, &clock)) != before;
         // A command that sets a field to its current value (or moves an
         // item to where it already is) is a genuine no-op: Loro's LWW
         // registers dedupe same-value writes, so nothing is pushed onto the
@@ -370,7 +382,7 @@ proptest! {
         // real change instead — there's nothing of `last`'s own to invert.
         if changed {
             doc.apply(Command::Undo, &clock, &ids_src).unwrap();
-            let after = content(&doc.read(ViewFilter::All, &clock));
+            let after = content(&doc.read(ViewFilter::All, ListFilter::All, &clock));
             prop_assert_eq!(before, after);
         }
     }

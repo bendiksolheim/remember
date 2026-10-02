@@ -16,6 +16,7 @@ fn enrich_add(app: &App, command: Command) -> Command {
         title,
         after,
         due: None,
+        list_id,
     } = command
     else {
         return command;
@@ -25,11 +26,13 @@ fn enrich_add(app: &App, command: Command) -> Command {
             title: detection.stripped_title,
             after,
             due: Some(detection.due),
+            list_id,
         },
         None => Command::Add {
             title,
             after,
             due: None,
+            list_id,
         },
     }
 }

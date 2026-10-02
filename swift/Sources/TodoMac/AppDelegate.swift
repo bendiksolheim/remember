@@ -112,7 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
         item.button?.image = NSImage(systemSymbolName: "checklist", accessibilityDescription: "Todo")
 
         let menu = NSMenu()
-        let syncItem = NSMenuItem(title: "Sync…", action: #selector(showSyncSettings), keyEquivalent: ",")
+        let syncItem = NSMenuItem(title: "Settings…", action: #selector(showSyncSettings), keyEquivalent: ",")
         syncItem.target = self
         menu.addItem(syncItem)
         menu.addItem(.separator())

@@ -2,18 +2,34 @@
 //! Plain functions, no decisions — covered at 100%.
 
 use crate::{
-    AppError, Command, DueDetection, Session, Snapshot, SyncError, SyncOutcome, TaskRow, View,
+    AppError, Command, DueDetection, ListFilter, ListRow, Session, Snapshot, SyncError,
+    SyncOutcome, TaskRow, View,
 };
 
 pub fn command_to_core(command: Command) -> todo_core::Command {
     match command {
-        Command::Add { title, after, due } => todo_core::Command::Add { title, after, due },
+        Command::Add {
+            title,
+            after,
+            due,
+            list_id,
+        } => todo_core::Command::Add {
+            title,
+            after,
+            due,
+            list_id,
+        },
         Command::SetTitle { id, title } => todo_core::Command::SetTitle { id, title },
         Command::SetNotes { id, notes } => todo_core::Command::SetNotes { id, notes },
         Command::SetDone { id, done } => todo_core::Command::SetDone { id, done },
         Command::SetDue { id, due } => todo_core::Command::SetDue { id, due },
         Command::Move { id, after } => todo_core::Command::Move { id, after },
         Command::Delete { id } => todo_core::Command::Delete { id },
+        Command::SetList { id, list_id } => todo_core::Command::SetList { id, list_id },
+        Command::AddList { name, after } => todo_core::Command::AddList { name, after },
+        Command::RenameList { id, name } => todo_core::Command::RenameList { id, name },
+        Command::DeleteList { id } => todo_core::Command::DeleteList { id },
+        Command::MoveList { id, after } => todo_core::Command::MoveList { id, after },
         Command::Undo => todo_core::Command::Undo,
         Command::Redo => todo_core::Command::Redo,
     }
@@ -35,6 +51,27 @@ pub fn view_from_core(view: todo_core::ViewFilter) -> View {
     }
 }
 
+pub fn list_filter_to_core(filter: ListFilter) -> todo_core::ListFilter {
+    match filter {
+        ListFilter::All => todo_core::ListFilter::All,
+        ListFilter::List { id } => todo_core::ListFilter::List(id),
+    }
+}
+
+pub fn list_filter_from_core(filter: todo_core::ListFilter) -> ListFilter {
+    match filter {
+        todo_core::ListFilter::All => ListFilter::All,
+        todo_core::ListFilter::List(id) => ListFilter::List { id },
+    }
+}
+
+pub fn list_row_from_core(row: &todo_core::ListRow) -> ListRow {
+    ListRow {
+        id: row.id.clone(),
+        name: row.name.clone(),
+    }
+}
+
 pub fn task_row_from_core(row: &todo_core::TaskRow) -> TaskRow {
     TaskRow {
         id: row.id.clone(),
@@ -44,6 +81,8 @@ pub fn task_row_from_core(row: &todo_core::TaskRow) -> TaskRow {
         due: row.due,
         due_label: row.due_label.clone(),
         overdue: row.overdue,
+        list_id: row.list_id.clone(),
+        list_name: row.list_name.clone(),
     }
 }
 
@@ -59,6 +98,8 @@ pub fn snapshot_from_core(snapshot: &todo_core::Snapshot) -> Snapshot {
     Snapshot {
         rows: snapshot.rows.iter().map(task_row_from_core).collect(),
         view: view_from_core(snapshot.view),
+        current_list: list_filter_from_core(snapshot.current_list.clone()),
+        lists: snapshot.lists.iter().map(list_row_from_core).collect(),
         active_count: snapshot.active_count,
         can_undo: snapshot.can_undo,
         can_redo: snapshot.can_redo,
@@ -119,17 +160,19 @@ mod tests {
             command_to_core(Command::Add {
                 title: "t".to_string(),
                 after: None,
-                due: Some(7)
+                due: Some(7),
+                list_id: None,
             }),
-            todo_core::Command::Add { title, after: None, due: Some(7) } if title == "t"
+            todo_core::Command::Add { title, after: None, due: Some(7), list_id: None } if title == "t"
         ));
         assert!(matches!(
             command_to_core(Command::Add {
                 title: "t".to_string(),
                 after: Some("x".to_string()),
-                due: None
+                due: None,
+                list_id: Some("l".to_string()),
             }),
-            todo_core::Command::Add { after: Some(a), .. } if a == "x"
+            todo_core::Command::Add { after: Some(a), list_id: Some(l), .. } if a == "x" && l == "l"
         ));
         assert!(matches!(
             command_to_core(Command::SetTitle {
@@ -187,6 +230,40 @@ mod tests {
             todo_core::Command::Delete { id } if id == "i"
         ));
         assert!(matches!(
+            command_to_core(Command::SetList {
+                id: "i".to_string(),
+                list_id: "l".to_string()
+            }),
+            todo_core::Command::SetList { id, list_id } if id == "i" && list_id == "l"
+        ));
+        assert!(matches!(
+            command_to_core(Command::AddList {
+                name: "n".to_string(),
+                after: Some("a".to_string())
+            }),
+            todo_core::Command::AddList { name, after: Some(a) } if name == "n" && a == "a"
+        ));
+        assert!(matches!(
+            command_to_core(Command::RenameList {
+                id: "i".to_string(),
+                name: "n".to_string()
+            }),
+            todo_core::Command::RenameList { id, name } if id == "i" && name == "n"
+        ));
+        assert!(matches!(
+            command_to_core(Command::DeleteList {
+                id: "i".to_string()
+            }),
+            todo_core::Command::DeleteList { id } if id == "i"
+        ));
+        assert!(matches!(
+            command_to_core(Command::MoveList {
+                id: "i".to_string(),
+                after: None
+            }),
+            todo_core::Command::MoveList { after: None, .. }
+        ));
+        assert!(matches!(
             command_to_core(Command::Undo),
             todo_core::Command::Undo
         ));
@@ -208,6 +285,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn list_filter_round_trips_all() {
+        assert_eq!(list_filter_to_core(ListFilter::All), todo_core::ListFilter::All);
+        assert_eq!(
+            list_filter_from_core(todo_core::ListFilter::All),
+            ListFilter::All
+        );
+    }
+
+    #[test]
+    fn list_filter_round_trips_list() {
+        assert_eq!(
+            list_filter_to_core(ListFilter::List { id: "l".to_string() }),
+            todo_core::ListFilter::List("l".to_string())
+        );
+        assert_eq!(
+            list_filter_from_core(todo_core::ListFilter::List("l".to_string())),
+            ListFilter::List { id: "l".to_string() }
+        );
+    }
+
+    #[test]
+    fn list_row_converts_all_fields() {
+        let row = list_row_from_core(&todo_core::ListRow {
+            id: "l".to_string(),
+            name: "Work".to_string(),
+        });
+        assert_eq!(row.id, "l");
+        assert_eq!(row.name, "Work");
+    }
+
     fn sample_core_row(due: Option<i64>, due_label: Option<&str>) -> todo_core::TaskRow {
         todo_core::TaskRow {
             id: "id".to_string(),
@@ -217,6 +325,8 @@ mod tests {
             due,
             due_label: due_label.map(str::to_string),
             overdue: due.is_some(),
+            list_id: "l".to_string(),
+            list_name: "List".to_string(),
         }
     }
 
@@ -230,6 +340,8 @@ mod tests {
         assert_eq!(row.due, Some(42));
         assert_eq!(row.due_label.as_deref(), Some("Today"));
         assert!(row.overdue);
+        assert_eq!(row.list_id, "l");
+        assert_eq!(row.list_name, "List");
     }
 
     #[test]
@@ -257,6 +369,11 @@ mod tests {
         let core_snapshot = todo_core::Snapshot {
             rows: vec![sample_core_row(Some(1), Some("Today"))],
             view: todo_core::ViewFilter::Active,
+            current_list: todo_core::ListFilter::List("l".to_string()),
+            lists: vec![todo_core::ListRow {
+                id: "l".to_string(),
+                name: "List".to_string(),
+            }],
             active_count: 3,
             can_undo: true,
             can_redo: false,
@@ -266,6 +383,9 @@ mod tests {
         assert_eq!(snapshot.rows.len(), 1);
         assert_eq!(snapshot.rows[0].id, "id");
         assert!(matches!(snapshot.view, View::Active));
+        assert_eq!(snapshot.current_list, ListFilter::List { id: "l".to_string() });
+        assert_eq!(snapshot.lists.len(), 1);
+        assert_eq!(snapshot.lists[0].id, "l");
         assert_eq!(snapshot.active_count, 3);
         assert!(snapshot.can_undo);
         assert!(!snapshot.can_redo);
@@ -277,12 +397,17 @@ mod tests {
         let core_snapshot = todo_core::Snapshot {
             rows: vec![],
             view: todo_core::ViewFilter::All,
+            current_list: todo_core::ListFilter::All,
+            lists: vec![],
             active_count: 0,
             can_undo: false,
             can_redo: false,
             revision: 0,
         };
-        assert!(snapshot_from_core(&core_snapshot).rows.is_empty());
+        let snapshot = snapshot_from_core(&core_snapshot);
+        assert!(snapshot.rows.is_empty());
+        assert_eq!(snapshot.current_list, ListFilter::All);
+        assert!(snapshot.lists.is_empty());
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use todo_core::snapshot::due_label;
-use todo_core::{Command, Doc, FixedClock, SeqIdSource, ViewFilter};
+use todo_core::{Command, Doc, FixedClock, ListFilter, SeqIdSource, ViewFilter};
 
 const DAY: i64 = 86_400;
 
@@ -15,10 +15,11 @@ fn fixture() -> Doc {
 
     doc.apply(
         Command::Add {
-            title: "Buy milk".to_string(),
-            after: None,
-            due: None,
-        },
+                title: "Buy milk".to_string(),
+                after: None,
+                due: None,
+                list_id: None,
+            },
         &clock,
         &ids,
     )
@@ -26,15 +27,16 @@ fn fixture() -> Doc {
 
     doc.apply(
         Command::Add {
-            title: "Write report".to_string(),
-            after: None,
-            due: None,
-        },
+                title: "Write report".to_string(),
+                after: None,
+                due: None,
+                list_id: None,
+            },
         &clock,
         &ids,
     )
     .unwrap();
-    let write_report = doc.read(ViewFilter::All, &clock).rows[0].id.clone();
+    let write_report = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0].id.clone();
     doc.apply(
         Command::SetDue {
             id: write_report,
@@ -47,15 +49,16 @@ fn fixture() -> Doc {
 
     doc.apply(
         Command::Add {
-            title: "Call dentist".to_string(),
-            after: None,
-            due: None,
-        },
+                title: "Call dentist".to_string(),
+                after: None,
+                due: None,
+                list_id: None,
+            },
         &clock,
         &ids,
     )
     .unwrap();
-    let call_dentist = doc.read(ViewFilter::All, &clock).rows[0].id.clone();
+    let call_dentist = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0].id.clone();
     doc.apply(
         Command::SetDue {
             id: call_dentist,
@@ -68,15 +71,16 @@ fn fixture() -> Doc {
 
     doc.apply(
         Command::Add {
-            title: "Pay rent".to_string(),
-            after: None,
-            due: None,
-        },
+                title: "Pay rent".to_string(),
+                after: None,
+                due: None,
+                list_id: None,
+            },
         &clock,
         &ids,
     )
     .unwrap();
-    let pay_rent = doc.read(ViewFilter::All, &clock).rows[0].id.clone();
+    let pay_rent = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0].id.clone();
     doc.apply(
         Command::SetDue {
             id: pay_rent,
@@ -89,15 +93,16 @@ fn fixture() -> Doc {
 
     doc.apply(
         Command::Add {
-            title: "Clean garage".to_string(),
-            after: None,
-            due: None,
-        },
+                title: "Clean garage".to_string(),
+                after: None,
+                due: None,
+                list_id: None,
+            },
         &clock,
         &ids,
     )
     .unwrap();
-    let clean_garage = doc.read(ViewFilter::All, &clock).rows[0].id.clone();
+    let clean_garage = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0].id.clone();
     doc.apply(
         Command::SetDone {
             id: clean_garage,
@@ -110,15 +115,16 @@ fn fixture() -> Doc {
 
     doc.apply(
         Command::Add {
-            title: "Submit taxes".to_string(),
-            after: None,
-            due: None,
-        },
+                title: "Submit taxes".to_string(),
+                after: None,
+                due: None,
+                list_id: None,
+            },
         &clock,
         &ids,
     )
     .unwrap();
-    let submit_taxes = doc.read(ViewFilter::All, &clock).rows[0].id.clone();
+    let submit_taxes = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0].id.clone();
     doc.apply(
         Command::SetDue {
             id: submit_taxes.clone(),
@@ -145,21 +151,21 @@ fn fixture() -> Doc {
 fn snapshot_all_view() {
     let doc = fixture();
     let clock = FixedClock(NOW);
-    insta::assert_yaml_snapshot!(doc.read(ViewFilter::All, &clock));
+    insta::assert_yaml_snapshot!(doc.read(ViewFilter::All, ListFilter::All, &clock));
 }
 
 #[test]
 fn snapshot_active_view() {
     let doc = fixture();
     let clock = FixedClock(NOW);
-    insta::assert_yaml_snapshot!(doc.read(ViewFilter::Active, &clock));
+    insta::assert_yaml_snapshot!(doc.read(ViewFilter::Active, ListFilter::All, &clock));
 }
 
 #[test]
 fn snapshot_completed_view() {
     let doc = fixture();
     let clock = FixedClock(NOW);
-    insta::assert_yaml_snapshot!(doc.read(ViewFilter::Completed, &clock));
+    insta::assert_yaml_snapshot!(doc.read(ViewFilter::Completed, ListFilter::All, &clock));
 }
 
 #[test]

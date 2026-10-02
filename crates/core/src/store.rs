@@ -137,6 +137,65 @@ impl Store {
         Ok(())
     }
 
+    /// The sidebar/"current" list selected on *this device* — not synced,
+    /// since different devices may legitimately be looking at different
+    /// lists at the same time. `None` means "never set" (fresh install) or
+    /// explicitly "All lists".
+    pub fn load_current_list(&self) -> Result<Option<String>, CoreError> {
+        self.load_meta_string("current_list")
+    }
+
+    pub fn save_current_list(&self, list_id: Option<&str>) -> Result<(), CoreError> {
+        self.save_meta_string("current_list", list_id)
+    }
+
+    /// The last *concrete* list a capture landed in on this device —
+    /// distinct from [`Store::load_current_list`], which can be "All": a
+    /// new task always needs one real destination list, even while the
+    /// current view is showing every list combined, so this tracks
+    /// whichever concrete list was selected most recently regardless of
+    /// whether the view has since moved to "All". `None` means never set.
+    pub fn load_capture_list(&self) -> Result<Option<String>, CoreError> {
+        self.load_meta_string("capture_list")
+    }
+
+    pub fn save_capture_list(&self, list_id: &str) -> Result<(), CoreError> {
+        self.save_meta_string("capture_list", Some(list_id))
+    }
+
+    fn load_meta_string(&self, key: &str) -> Result<Option<String>, CoreError> {
+        let bytes: Option<Vec<u8>> = self
+            .lock()
+            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(store_err)?;
+        bytes
+            .map(|b| String::from_utf8(b).map_err(|e| store_err(e.to_string())))
+            .transpose()
+    }
+
+    /// `None` deletes the key (rather than storing an empty value) so
+    /// `load_meta_string` unambiguously reports "never set" afterward.
+    fn save_meta_string(&self, key: &str, value: Option<&str>) -> Result<(), CoreError> {
+        let conn = self.lock();
+        match value {
+            Some(v) => conn
+                .execute(
+                    "INSERT INTO meta (key, value) VALUES (?1, ?2)
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, v.as_bytes()),
+                )
+                .map(|_| ())
+                .map_err(store_err),
+            None => conn
+                .execute("DELETE FROM meta WHERE key = ?1", [key])
+                .map(|_| ())
+                .map_err(store_err),
+        }
+    }
+
     pub fn load_snapshot(&self) -> Result<Option<Vec<u8>>, CoreError> {
         self.lock()
             .query_row("SELECT snapshot FROM doc WHERE id = 1", [], |row| {

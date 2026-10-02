@@ -49,6 +49,19 @@ public struct TaskListView: SwiftUI.View {
         .navigationTitle("Todo")
         .toolbar {
             ToolbarItem {
+                Menu {
+                    Button("All") { model.setCurrentList(.all) }
+                    if let lists = model.snapshot?.lists, !lists.isEmpty {
+                        Divider()
+                        ForEach(lists, id: \.id) { list in
+                            Button(list.name) { model.setCurrentList(.list(id: list.id)) }
+                        }
+                    }
+                } label: {
+                    Label(currentListLabel, systemImage: "line.3.horizontal.decrease.circle")
+                }
+            }
+            ToolbarItem {
                 Picker("Filter", selection: viewBinding) {
                     Text("All").tag(TodoKit.View.all)
                     Text("Active").tag(TodoKit.View.active)
@@ -78,11 +91,21 @@ public struct TaskListView: SwiftUI.View {
         )
     }
 
+    private var currentListLabel: String {
+        guard let snapshot = model.snapshot else { return "All" }
+        switch snapshot.currentList {
+        case .all:
+            return "All"
+        case .list(let id):
+            return snapshot.lists.first(where: { $0.id == id })?.name ?? "All"
+        }
+    }
+
     private func addTask() {
         if let detection = dueDetection, !dueDismissed {
-            model.dispatch(.add(title: detection.strippedTitle, after: nil, due: detection.due))
+            model.dispatch(.add(title: detection.strippedTitle, after: nil, due: detection.due, listId: nil))
         } else {
-            model.dispatch(.add(title: newTitle, after: nil, due: nil))
+            model.dispatch(.add(title: newTitle, after: nil, due: nil, listId: nil))
         }
         newTitle = ""
         dueDetection = nil

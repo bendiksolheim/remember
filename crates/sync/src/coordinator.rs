@@ -229,10 +229,11 @@ mod tests {
 
     fn add(app: &App, title: &str) {
         app.dispatch(Command::Add {
-            title: title.to_string(),
-            after: None,
-            due: None,
-        })
+                title: title.to_string(),
+                after: None,
+                due: None,
+                list_id: None,
+            })
         .unwrap();
     }
 

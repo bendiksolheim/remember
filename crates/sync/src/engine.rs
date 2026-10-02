@@ -121,10 +121,11 @@ mod tests {
 
     fn add(app: &App, title: &str) {
         app.dispatch(Command::Add {
-            title: title.to_string(),
-            after: None,
-            due: None,
-        })
+                title: title.to_string(),
+                after: None,
+                due: None,
+                list_id: None,
+            })
         .unwrap();
     }
 
@@ -147,14 +148,19 @@ mod tests {
     }
 
     #[test]
-    fn sync_once_with_nothing_local_and_nothing_remote_is_a_no_op() {
+    fn sync_once_on_a_brand_new_device_pushes_only_its_bootstrap_list() {
         let dir = TempDir::new().unwrap();
         let app = open(&dir, "a.sqlite3");
         let transport: Arc<dyn SyncTransport> = Arc::new(InMemoryTransport::new());
         let engine = SyncEngine::new(transport, unused_auth());
 
+        // Even with no user edits yet, `App::open` already bootstrapped the
+        // default list — see `todo_core::doc`'s module doc comment — so the
+        // very first sync round pushes that, not nothing.
         let (_, result) = engine.sync_once(&app, fresh_session("tok"));
-        assert_eq!(result.unwrap(), SyncOutcome::default());
+        let outcome = result.unwrap();
+        assert_eq!(outcome.pulled, 0);
+        assert!(outcome.pushed_bytes > 0);
     }
 
     #[test]

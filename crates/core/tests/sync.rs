@@ -16,10 +16,11 @@ fn db_path(dir: &TempDir, name: &str) -> String {
 
 fn add(app: &App, title: &str) {
     app.dispatch(Command::Add {
-        title: title.to_string(),
-        after: None,
-        due: None,
-    })
+                title: title.to_string(),
+                after: None,
+                due: None,
+                list_id: None,
+            })
     .unwrap();
 }
 
@@ -52,11 +53,17 @@ fn mark_pulled_persists_across_reopen() {
     assert_eq!(app2.last_pulled_seq().unwrap(), Some(42));
 }
 
+/// Even before the caller ever dispatches a `Command`, a fresh app already
+/// has something worth pushing — bootstrapping the default list is itself
+/// real document content, not a local-only concern — which matters for
+/// cross-device convergence: a second device must learn about the first
+/// device's default list (same fixed id, so this converges harmlessly) via
+/// the very first sync round, not just whatever the user types afterward.
 #[test]
-fn fresh_app_has_no_unpushed_changes() {
+fn fresh_app_has_unpushed_bootstrap_changes() {
     let dir = TempDir::new().unwrap();
     let app = App::open(&db_path(&dir, "todo.sqlite3")).unwrap();
-    assert!(!app.has_unpushed_changes().unwrap());
+    assert!(app.has_unpushed_changes().unwrap());
 }
 
 #[test]
