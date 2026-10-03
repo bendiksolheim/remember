@@ -48,7 +48,7 @@ struct ListsSettingsView: SwiftUI.View {
         let remaining = lists.enumerated()
             .filter { $0.offset != sourceIndex }
             .map(\.element)
-        let afterID = destination > 0 ? remaining[destination - 1].id : nil
+        let afterID = destination > 0 ? remaining[min(destination, remaining.count) - 1].id : nil
         model.dispatch(.moveList(id: movingID, after: afterID))
     }
 }

@@ -130,7 +130,7 @@ public struct TaskListView: SwiftUI.View {
         let remaining = rows.enumerated()
             .filter { $0.offset != sourceIndex }
             .map(\.element)
-        let afterID = destination > 0 ? remaining[destination - 1].id : nil
+        let afterID = destination > 0 ? remaining[min(destination, remaining.count) - 1].id : nil
         model.dispatch(.move(id: movingID, after: afterID))
     }
 }
