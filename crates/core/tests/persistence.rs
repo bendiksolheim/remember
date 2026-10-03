@@ -406,6 +406,7 @@ fn capture_sticks_to_the_last_concrete_list_even_while_viewing_all() {
     app.set_current_list(ListFilter::List(work.clone()))
         .unwrap();
     app.set_current_list(ListFilter::All).unwrap();
+    assert_eq!(app.current().capture_list_id, work);
 
     add(&app, "a");
     let row = app
@@ -422,6 +423,7 @@ fn capture_sticks_to_the_last_concrete_list_even_while_viewing_all() {
 fn capture_list_defaults_to_the_default_list_on_a_fresh_install() {
     let dir = TempDir::new().unwrap();
     let app = App::open(&db_path(&dir, "todo.sqlite3")).unwrap();
+    assert_eq!(app.current().capture_list_id, "default");
     add(&app, "a");
     assert_eq!(app.current().rows[0].list_id, "default");
 }

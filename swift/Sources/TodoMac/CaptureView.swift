@@ -11,7 +11,7 @@ import TodoKit
 /// The entire macOS UI for v1: a quick-add field, the live incomplete task
 /// list, inline title editing ("e" on the focused row), reordering the
 /// focused row (alt+shift+j/alt+shift+k), and switching the sticky current
-/// list (`ListSwitcher`). Deleting is still out of scope here -- that
+/// list (`ListPillRow`). Deleting is still out of scope here -- that
 /// remains reachable only via `TodoUI`'s `TaskListView`, which iOS still
 /// uses but this target no longer wires up. Moving an existing task to a
 /// different list is likewise iOS-only (`TaskDetailView`) -- this panel
@@ -19,6 +19,11 @@ import TodoKit
 struct CaptureView: SwiftUI.View {
     @Environment(TodoModel.self) private var model
     var onDismiss: () -> Void
+    /// Opens the Settings window on its Lists tab — wired to the pill row's
+    /// trailing "+" pill. `CaptureView` has no window of its own to show
+    /// Settings from (see `SpotlightPanel`'s doc comment), so this, like
+    /// `onDismiss`, is owned and supplied by `AppDelegate`.
+    var onOpenListsSettings: () -> Void
     /// Called with the panel's required total height whenever the row
     /// count changes, so `SpotlightPanel` can resize the actual window --
     /// a plain SwiftUI `ScrollView` has no natural "hug my content up to a
@@ -86,11 +91,16 @@ struct CaptureView: SwiftUI.View {
     /// field consume it before falling back to key-equivalent scanning. A
     /// local monitor intercepts before that happens, regardless of focus.
     @State private var optionNavMonitor: Any?
+    /// Measured height of `ListPillRow`, fed into `contentHeight` so the
+    /// panel grows when the roster wraps to a second line. Seeded to a
+    /// single-row estimate (not 0) so the panel doesn't visibly start too
+    /// short and then jump once the real `GeometryReader` measurement
+    /// lands a frame later.
+    @State private var pillRowHeight: CGFloat = 38
 
     var body: some SwiftUI.View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                ListSwitcher()
                 TextField("Add a task…", text: $input)
                     .textFieldStyle(.plain)
                     .font(.system(size: 22))
@@ -106,6 +116,17 @@ struct CaptureView: SwiftUI.View {
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 16)
+
+            Divider()
+            ListPillRow(onOpenListsSettings: onOpenListsSettings)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(key: PillRowHeightKey.self, value: geo.size.height)
+                    }
+                )
+                .onPreferenceChange(PillRowHeightKey.self) { pillRowHeight = $0 }
 
             if !displayRows.isEmpty {
                 Divider()
@@ -173,6 +194,18 @@ struct CaptureView: SwiftUI.View {
                     .keyboardShortcut("z", modifiers: .command)
                 Button("Redo") { model.dispatch(.redo) }
                     .keyboardShortcut("z", modifiers: [.command, .shift])
+                // ⌘1 jumps to All, ⌘2–⌘9 to the first 8 lists in sidebar
+                // order — the keyboard half of the pill row below, so
+                // switching lists never requires reaching for the mouse.
+                // Lives here (not inside `ListPillRow`) to keep every
+                // global shortcut owned by this one overlay, same as
+                // Undo/Redo/Toggle/Edit above.
+                Button("Select All List") { model.setCurrentList(.all) }
+                    .keyboardShortcut("1", modifiers: .command)
+                ForEach(Array((model.snapshot?.lists ?? []).prefix(8).enumerated()), id: \.element.id) { index, list in
+                    Button("Select \(list.name) List") { model.setCurrentList(.list(id: list.id)) }
+                        .keyboardShortcut(KeyEquivalent(Character("\(index + 2)")), modifiers: .command)
+                }
                 // Bare Space with no modifier would otherwise swallow the
                 // spacebar while the quick-add field is focused, so this is
                 // disabled whenever focus isn't on a row. Same reasoning
@@ -369,7 +402,7 @@ struct CaptureView: SwiftUI.View {
     }
 
     private var contentHeight: CGFloat {
-        PanelMetrics.inputHeight + (displayRows.isEmpty ? 0 : rowsAreaHeight)
+        PanelMetrics.inputHeight + pillRowHeight + (displayRows.isEmpty ? 0 : rowsAreaHeight)
     }
 
     private func addTask() {
@@ -456,46 +489,153 @@ struct CaptureView: SwiftUI.View {
     }
 }
 
-/// Inline control at the top of the capture panel for switching the sticky
-/// current list -- this target's only way to change which list a capture
-/// lands in, since it has no other window (see `SettingsWindowController`'s
-/// Lists pane for creating/renaming/deleting lists instead). Lists are
-/// shown in sidebar order from `snapshot.lists`; "All" browses every list's
-/// tasks here without changing the capture destination -- the last
-/// concrete list picked stays sticky even while viewing "All" (see
-/// `TodoModel.setCurrentList`'s own doc comment).
-private struct ListSwitcher: SwiftUI.View {
+/// Row of list pills under the capture panel's input field -- this target's
+/// only way to change which list a capture lands in, since it has no other
+/// window (see `SettingsWindowController`'s Lists pane, reachable via the
+/// trailing "+" pill, for creating/renaming/deleting lists instead).
+/// Replaces the old flat `Menu`-based switcher: every list is a visible,
+/// one-click pill instead of being hidden until opened, and ⌘1–⌘9 (wired in
+/// `CaptureView`'s overlay above) switch lists without touching the mouse
+/// at all -- each pill that has one shows its own "⌘n" on the left so the
+/// mapping never has to be memorized or counted out by eye as the roster
+/// grows (only the first 8 lists get one; see `pill`'s `shortcutDigit`).
+/// "All" is pinned first and isn't reorderable; the rest follow
+/// `snapshot.lists`' sidebar order, which `MoveList`/`ListsSettingsView`
+/// already manage. A small dot marks whichever list is the actual capture
+/// destination when it differs from the one being viewed -- i.e. while
+/// viewing "All", since picking a concrete list always makes it both (see
+/// `TodoModel.setCurrentList`'s own doc comment on why "All" doesn't change
+/// the sticky destination).
+private struct ListPillRow: SwiftUI.View {
     @Environment(TodoModel.self) private var model
+    var onOpenListsSettings: () -> Void
 
     var body: some SwiftUI.View {
-        Menu {
-            Button("All") { model.setCurrentList(.all) }
-            if let lists = model.snapshot?.lists, !lists.isEmpty {
-                Divider()
-                ForEach(lists, id: \.id) { list in
-                    Button(list.name) { model.setCurrentList(.list(id: list.id)) }
+        FlowLayout(spacing: 6) {
+            pill(label: "All", shortcutDigit: 1, isSelected: isAll, showsCaptureDot: false) {
+                model.setCurrentList(.all)
+            }
+            ForEach(Array((model.snapshot?.lists ?? []).enumerated()), id: \.element.id) { index, list in
+                pill(
+                    label: list.name,
+                    // Only the first 8 lists have a ⌘-shortcut at all (⌘2–⌘9
+                    // — see the hidden buttons in `CaptureView`'s overlay);
+                    // nil here just omits the hint, it never misrepresents
+                    // one that doesn't exist.
+                    shortcutDigit: index < 8 ? index + 2 : nil,
+                    isSelected: isSelected(list.id),
+                    showsCaptureDot: isAll && model.snapshot?.captureListId == list.id
+                ) {
+                    model.setCurrentList(.list(id: list.id))
                 }
             }
-        } label: {
-            Text(currentLabel)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
+            Button(action: onOpenListsSettings) {
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20, height: 20)
+                    .background(Color.secondary.opacity(0.12), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .focusable(false)
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        // Click-only, like `CaptureDueBadge` -- not part of the alt+j/alt+k
-        // row-focus chain or Tab order.
-        .focusable(false)
     }
 
-    private var currentLabel: String {
-        guard let snapshot = model.snapshot else { return "All" }
-        switch snapshot.currentList {
-        case .all:
-            return "All"
-        case .list(let id):
-            return snapshot.lists.first(where: { $0.id == id })?.name ?? "All"
+    private var isAll: Bool {
+        guard let snapshot = model.snapshot else { return true }
+        if case .all = snapshot.currentList { return true }
+        return false
+    }
+
+    private func isSelected(_ id: String) -> Bool {
+        guard let snapshot = model.snapshot, case .list(let current) = snapshot.currentList else { return false }
+        return current == id
+    }
+
+    @ViewBuilder
+    private func pill(
+        label: String,
+        shortcutDigit: Int?,
+        isSelected: Bool,
+        showsCaptureDot: Bool,
+        action: @escaping () -> Void
+    ) -> some SwiftUI.View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                if let shortcutDigit {
+                    Text("⌘\(shortcutDigit)")
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary.opacity(0.7))
+                }
+                Text(label)
+                    .font(.system(size: 12, weight: .medium))
+                if showsCaptureDot {
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 5, height: 5)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(isSelected ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.1), in: Capsule())
+            .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
         }
+        .buttonStyle(.plain)
+        // Click/⌘-shortcut only, like the old Menu-based switcher -- not
+        // part of the alt+j/alt+k row-focus chain or Tab order.
+        .focusable(false)
+    }
+}
+
+/// Left-to-right, top-to-bottom wrapping layout -- SwiftUI has no built-in
+/// equivalent. Used only by `ListPillRow` so a wide roster of lists wraps
+/// onto additional lines instead of being clipped or forcing horizontal
+/// scroll, matching how the task list below grows the whole panel's height
+/// for more content rather than confining it to a fixed box.
+private struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var rowWidth: CGFloat = 0
+        var totalHeight: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if rowWidth > 0, rowWidth + spacing + size.width > maxWidth {
+                totalHeight += rowHeight + spacing
+                rowWidth = 0
+                rowHeight = 0
+            }
+            rowWidth += (rowWidth > 0 ? spacing : 0) + size.width
+            rowHeight = max(rowHeight, size.height)
+        }
+        totalHeight += rowHeight
+        return CGSize(width: maxWidth.isFinite ? maxWidth : rowWidth, height: totalHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x: CGFloat = bounds.minX
+        var y: CGFloat = bounds.minY
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+    }
+}
+
+private struct PillRowHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 

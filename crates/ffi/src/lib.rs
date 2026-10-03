@@ -124,6 +124,9 @@ pub struct Snapshot {
     pub rows: Vec<TaskRow>,
     pub view: View,
     pub current_list: ListFilter,
+    /// The concrete list a new capture would land in right now, even while
+    /// `current_list` is `All`. See `todo_core::Snapshot::capture_list_id`.
+    pub capture_list_id: String,
     pub lists: Vec<ListRow>,
     pub active_count: u32,
     pub can_undo: bool,

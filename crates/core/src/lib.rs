@@ -250,9 +250,12 @@ impl App {
 
     pub fn current(&self) -> Snapshot {
         let state = lock(&self.shared.state);
-        state
-            .doc
-            .read(state.view, state.current_list.clone(), self.shared.clock.as_ref())
+        let mut snapshot =
+            state
+                .doc
+                .read(state.view, state.current_list.clone(), self.shared.clock.as_ref());
+        snapshot.capture_list_id = state.capture_list_id.clone();
+        snapshot
     }
 
     pub fn flush(&self) -> Result<(), CoreError> {

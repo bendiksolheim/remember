@@ -23,6 +23,7 @@ rows:
     list_name: Tasks
 view: Completed
 current_list: All
+capture_list_id: ""
 lists:
   - id: default
     name: Tasks

@@ -99,6 +99,7 @@ pub fn snapshot_from_core(snapshot: &todo_core::Snapshot) -> Snapshot {
         rows: snapshot.rows.iter().map(task_row_from_core).collect(),
         view: view_from_core(snapshot.view),
         current_list: list_filter_from_core(snapshot.current_list.clone()),
+        capture_list_id: snapshot.capture_list_id.clone(),
         lists: snapshot.lists.iter().map(list_row_from_core).collect(),
         active_count: snapshot.active_count,
         can_undo: snapshot.can_undo,
@@ -370,6 +371,7 @@ mod tests {
             rows: vec![sample_core_row(Some(1), Some("Today"))],
             view: todo_core::ViewFilter::Active,
             current_list: todo_core::ListFilter::List("l".to_string()),
+            capture_list_id: "l".to_string(),
             lists: vec![todo_core::ListRow {
                 id: "l".to_string(),
                 name: "List".to_string(),
@@ -384,6 +386,7 @@ mod tests {
         assert_eq!(snapshot.rows[0].id, "id");
         assert!(matches!(snapshot.view, View::Active));
         assert_eq!(snapshot.current_list, ListFilter::List { id: "l".to_string() });
+        assert_eq!(snapshot.capture_list_id, "l");
         assert_eq!(snapshot.lists.len(), 1);
         assert_eq!(snapshot.lists[0].id, "l");
         assert_eq!(snapshot.active_count, 3);
@@ -398,6 +401,7 @@ mod tests {
             rows: vec![],
             view: todo_core::ViewFilter::All,
             current_list: todo_core::ListFilter::All,
+            capture_list_id: "default".to_string(),
             lists: vec![],
             active_count: 0,
             can_undo: false,
@@ -407,6 +411,7 @@ mod tests {
         let snapshot = snapshot_from_core(&core_snapshot);
         assert!(snapshot.rows.is_empty());
         assert_eq!(snapshot.current_list, ListFilter::All);
+        assert_eq!(snapshot.capture_list_id, "default");
         assert!(snapshot.lists.is_empty());
     }
 

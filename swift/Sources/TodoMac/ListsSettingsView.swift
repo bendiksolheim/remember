@@ -2,7 +2,7 @@ import SwiftUI
 import TodoKit
 
 /// List management: create, rename, delete, and reorder lists. Kept in
-/// Settings rather than the capture panel's `ListSwitcher` -- that control
+/// Settings rather than the capture panel's `ListPillRow` -- that control
 /// stays fast and minimal (switch only); this is the deliberate,
 /// separate-visit surface for the less-frequent management actions.
 struct ListsSettingsView: SwiftUI.View {

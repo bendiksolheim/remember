@@ -38,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
 
         panel = SpotlightPanel(content: CaptureView(
             onDismiss: { [weak self] in self?.hide() },
+            onOpenListsSettings: { [weak self] in self?.showSettings(initialTab: .lists) },
             onContentHeightChange: { [weak self] height in self?.panel.resize(toContentHeight: height) }
         ).environment(model))
         panel.spotlightDelegate = self
@@ -123,8 +124,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
     }
 
     @objc private func showSyncSettings() {
+        showSettings(initialTab: .sync)
+    }
+
+    private func showSettings(initialTab: SettingsTab) {
         if settingsWindowController == nil {
-            settingsWindowController = SettingsWindowController(model: model)
+            settingsWindowController = SettingsWindowController(model: model, initialTab: initialTab)
         }
         settingsWindowController?.show()
     }

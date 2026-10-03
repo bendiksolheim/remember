@@ -397,6 +397,9 @@ impl Doc {
             rows,
             view,
             current_list: list,
+            // Not this layer's to know — see the field's own doc comment.
+            // `App::current()` fills in the real value.
+            capture_list_id: String::new(),
             lists: list_rows,
             active_count,
             can_undo: self.undo.can_undo(),

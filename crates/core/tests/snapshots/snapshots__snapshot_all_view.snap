@@ -59,6 +59,7 @@ rows:
     list_name: Tasks
 view: All
 current_list: All
+capture_list_id: ""
 lists:
   - id: default
     name: Tasks

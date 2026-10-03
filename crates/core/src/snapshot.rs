@@ -33,6 +33,12 @@ pub struct Snapshot {
     pub rows: Vec<TaskRow>,
     pub view: ViewFilter,
     pub current_list: ListFilter,
+    /// The concrete list a new capture would land in right now — mirrors
+    /// `AppState::capture_list_id`. `Doc::read` doesn't track this itself
+    /// (it's `App`-level state, sticky across "All" views), so it fills in
+    /// an empty placeholder here; `App::current()` overwrites it with the
+    /// real value before returning.
+    pub capture_list_id: String,
     pub lists: Vec<ListRow>,
     pub active_count: u32,
     pub can_undo: bool,
