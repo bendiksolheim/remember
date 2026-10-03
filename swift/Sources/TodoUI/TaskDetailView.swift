@@ -28,9 +28,8 @@ public struct TaskDetailView: SwiftUI.View {
             if hasDue {
                 DatePicker("Due", selection: $due, displayedComponents: .date)
             }
-            // The one surface that can re-categorize a task after the fact
-            // — Mac's capture panel only ever shows one list at a time, so
-            // moving an existing task between lists isn't reachable there.
+            // Point-and-click equivalent of Mac's ⌘⌥2–⌘⌥9 (CaptureView) —
+            // this is iOS's only way to re-categorize an existing task.
             Picker("List", selection: listBinding) {
                 ForEach(model.snapshot?.lists ?? [], id: \.id) { list in
                     Text(list.name).tag(list.id)

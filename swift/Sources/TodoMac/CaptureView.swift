@@ -10,12 +10,12 @@ import TodoKit
 
 /// The entire macOS UI for v1: a quick-add field, the live incomplete task
 /// list, inline title editing ("e" on the focused row), reordering the
-/// focused row (alt+shift+j/alt+shift+k), and switching the sticky current
-/// list (`ListPillRow`). Deleting is still out of scope here -- that
-/// remains reachable only via `TodoUI`'s `TaskListView`, which iOS still
-/// uses but this target no longer wires up. Moving an existing task to a
-/// different list is likewise iOS-only (`TaskDetailView`) -- this panel
-/// only ever shows one list at a time, so there's nowhere to drop it.
+/// focused row (alt+shift+j/alt+shift+k), switching the sticky current list
+/// (`ListPillRow`), and moving the focused row to a different list
+/// (⌘⌥2–⌘⌥9, mirroring the plain ⌘2–⌘9 switch shortcuts -- see
+/// `moveFocusedRow`). Deleting is still out of scope here -- that remains
+/// reachable only via `TodoUI`'s `TaskListView`, which iOS still uses but
+/// this target no longer wires up.
 struct CaptureView: SwiftUI.View {
     @Environment(TodoModel.self) private var model
     var onDismiss: () -> Void
@@ -83,6 +83,28 @@ struct CaptureView: SwiftUI.View {
     /// shifts the panel's height. Keeping it in `ghosts` (rendered as
     /// not-completed) until the snapshot catches up closes that gap.
     @State private var revivedIDs: Set<String> = []
+    /// Ids of rows mid-fade-out after being moved to a different list by
+    /// `moveFocusedRow`. Unlike `ghosts`, these are never revivable by
+    /// clicking -- a list-move isn't a toggle -- so they get their own
+    /// smaller set of state rather than overloading the completion-ghost
+    /// machinery with a second, differently-behaved kind of entry.
+    @State private var fadingMoveIDs: Set<String> = []
+    /// The row's data at the moment it started fading, keyed by id -- it's
+    /// about to drop out of `model.snapshot.rows` (it now belongs to a
+    /// different list), so `displayRows` can no longer source it from
+    /// there once that snapshot lands.
+    @State private var fadingMoveRows: [String: TaskRow] = [:]
+    /// Where each fading-move row was, same convention as `ghostAnchors`:
+    /// the id it directly followed when the move started, or `""` if it
+    /// was first.
+    @State private var fadingMoveAnchors: [String: String] = [:]
+    /// Pending final-removal task per fading-move row id, cancelled by
+    /// `reconcileUndoneMoves` if ⌘Z brings the row back before the fade
+    /// finishes.
+    @State private var fadingMoveTasks: [String: Task<Void, Never>] = [:]
+    /// Id of the list whose pill in `ListPillRow` should flash, set by
+    /// `blink(listId:)` right after a move lands and cleared ~0.5s later.
+    @State private var blinkingListID: String?
     /// Local monitor for alt+j/alt+k: SwiftUI's `.keyboardShortcut` (used
     /// below for Undo/Redo/Toggle) isn't honored while the quick-add
     /// TextField is first responder for a bare-Option combo -- unlike
@@ -118,7 +140,7 @@ struct CaptureView: SwiftUI.View {
             .padding(.vertical, 16)
 
             Divider()
-            ListPillRow(onOpenListsSettings: onOpenListsSettings)
+            ListPillRow(onOpenListsSettings: onOpenListsSettings, blinkingListID: blinkingListID)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 8)
                 .background(
@@ -136,6 +158,7 @@ struct CaptureView: SwiftUI.View {
                             CaptureTaskRow(
                                 row: entry.row,
                                 completed: entry.completed,
+                                fading: entry.fading,
                                 isFocused: focus == .row(entry.row.id),
                                 isEditing: editingRowID == entry.row.id,
                                 editText: $editText,
@@ -145,7 +168,11 @@ struct CaptureView: SwiftUI.View {
                                 onCommitEdit: commitEdit,
                                 onCancelEdit: cancelEdit
                             )
-                            .focusable()
+                            // A fading-move row is inert -- see
+                            // `fadingMoveIDs`'s doc comment -- so it's
+                            // dropped from the Tab/alt+j/alt+k chain here,
+                            // same as `focusChain` below already excludes it.
+                            .focusable(!entry.fading)
                             .focusEffectDisabled()
                             .focused($focus, equals: .row(entry.row.id))
                         }
@@ -169,7 +196,10 @@ struct CaptureView: SwiftUI.View {
         .onChange(of: contentHeight, initial: true) { _, newValue in
             onContentHeightChange(newValue)
         }
-        .onChange(of: model.snapshot?.revision) { _, _ in reconcileRevivedGhosts() }
+        .onChange(of: model.snapshot?.revision) { _, _ in
+            reconcileRevivedGhosts()
+            reconcileUndoneMoves()
+        }
         .onChange(of: focus) { oldValue, _ in
             // Focus left the edit field for a reason other than our own
             // commitEdit()/cancelEdit() (both clear `editingRowID` before
@@ -205,6 +235,21 @@ struct CaptureView: SwiftUI.View {
                 ForEach(Array((model.snapshot?.lists ?? []).prefix(8).enumerated()), id: \.element.id) { index, list in
                     Button("Select \(list.name) List") { model.setCurrentList(.list(id: list.id)) }
                         .keyboardShortcut(KeyEquivalent(Character("\(index + 2)")), modifiers: .command)
+                }
+                // ⌘⌥2–⌘⌥9: move the focused row into one of the same first
+                // 8 lists ⌘2–⌘9 switch to -- deliberately the same digit
+                // mapping, Option added to mean "send it there" instead of
+                // "go there". Not Shift: ⌘⇧3/4/5 (and ⌘⇧6 on Touch Bar
+                // Macs) are macOS's own screenshot shortcuts system-wide,
+                // and partially shadowing only *some* digits in one
+                // mnemonic set would be worse than using a different
+                // modifier for all of them. There's no ⌘⌥1: digit 1 is
+                // "All" in the switch mapping, and a task can't be moved
+                // into a filter that isn't a real list, so that digit is
+                // simply never bound to a move button at all.
+                ForEach(Array((model.snapshot?.lists ?? []).prefix(8).enumerated()), id: \.element.id) { index, list in
+                    Button("Move Focused to \(list.name) List") { moveFocusedRow(to: list.id) }
+                        .keyboardShortcut(KeyEquivalent(Character("\(index + 2)")), modifiers: [.command, .option])
                 }
                 // Bare Space with no modifier would otherwise swallow the
                 // spacebar while the quick-add field is focused, so this is
@@ -270,10 +315,11 @@ struct CaptureView: SwiftUI.View {
     }
 
     /// Keyboard-focus order for alt+j/alt+k: the quick-add field first, then
-    /// every displayed row (ghosts included) in display order. Both ends
-    /// wrap around.
+    /// every displayed row (completion ghosts included, fading-move rows
+    /// excluded -- see `fadingMoveIDs`) in display order. Both ends wrap
+    /// around.
     private var focusChain: [FocusTarget] {
-        [.input] + displayRows.map { .row($0.row.id) }
+        [.input] + displayRows.filter { !$0.fading }.map { .row($0.row.id) }
     }
 
     private func moveFocus(by delta: Int) {
@@ -318,6 +364,108 @@ struct CaptureView: SwiftUI.View {
     private func toggleFocusedRow() {
         guard case .row(let id)? = focus else { return }
         toggle(id: id)
+    }
+
+    /// ⌘⌥2–⌘⌥9: moves the focused row into `listId` (always one of the
+    /// first 8 lists -- see the overlay buttons above). Silently does
+    /// nothing if there's no eligible focused row at all (no focus, mid
+    /// rename, or a completion ghost -- renaming/reviving and moving don't
+    /// mix, same reasoning as `canEditFocusedRow`) or if the row is already
+    /// in `listId` -- no command, no fade, no blink, since nothing would
+    /// actually change.
+    private func moveFocusedRow(to listId: String) {
+        guard case .row(let id)? = focus,
+            editingRowID == nil,
+            !ghosts.contains(where: { $0.id == id }),
+            let rows = model.snapshot?.rows,
+            let index = rows.firstIndex(where: { $0.id == id }),
+            rows[index].listId != listId
+        else { return }
+        let row = rows[index]
+
+        // Computed from the chain *before* dispatch -- once the row leaves
+        // `model.snapshot.rows` the chain would no longer contain it at
+        // all, so there'd be nothing to find "the next one after" from.
+        // Unlike `removeGhost`'s equivalent check, no `focus == .row(id)`
+        // re-check is needed before applying it: everything here runs
+        // synchronously, so focus can't have moved out from under us
+        // between the guard above and this assignment.
+        let chain = focusChain
+        guard let chainIndex = chain.firstIndex(of: .row(id)) else { return }
+        let successor = chain[(chainIndex + 1) % chain.count]
+
+        model.dispatch(.setList(id: id, listId: listId))
+        focus = successor
+
+        // Under "All", the row never actually leaves the displayed set --
+        // it's still there, just recategorized -- so fading it out would
+        // look like it's being removed and then mysteriously isn't. Only
+        // fade when the current filter is a single list the row is truly
+        // about to drop out of.
+        var isAllView = false
+        if case .all = model.snapshot?.currentList { isAllView = true }
+        if !isAllView {
+            withAnimation(.easeOut(duration: 0.5)) {
+                fadingMoveAnchors[id] = index > 0 ? rows[index - 1].id : ""
+                fadingMoveRows[id] = row
+                fadingMoveIDs.insert(id)
+            }
+            scheduleMoveFadeRemoval(id: id)
+        }
+
+        blink(listId: listId)
+    }
+
+    private func scheduleMoveFadeRemoval(id: String) {
+        fadingMoveTasks[id] = Task {
+            try? await Task.sleep(for: .seconds(0.5))
+            guard !Task.isCancelled else { return }
+            fadingMoveRows.removeValue(forKey: id)
+            fadingMoveAnchors.removeValue(forKey: id)
+            fadingMoveTasks[id] = nil
+            fadingMoveIDs.remove(id)
+        }
+    }
+
+    /// Flashes `listId`'s pill in `ListPillRow` briefly -- the move's only
+    /// feedback when the row itself doesn't visibly disappear (the "All"
+    /// case above). Animated on both ends: a quick flash in, then an
+    /// explicit fade back out, rather than just snapping the highlight away
+    /// after the delay.
+    private func blink(listId: String) {
+        withAnimation(.easeInOut(duration: 0.15)) {
+            blinkingListID = listId
+        }
+        Task {
+            try? await Task.sleep(for: .seconds(0.5))
+            guard blinkingListID == listId else { return }
+            withAnimation(.easeOut(duration: 0.3)) {
+                blinkingListID = nil
+            }
+        }
+    }
+
+    /// Cancels a fading move and snaps the row straight back to normal,
+    /// deliberately un-animated, the instant `model.snapshot` shows it back
+    /// in the current list -- i.e. ⌘Z undid the move while the 0.5s fade
+    /// was still playing. Undo reflects true state immediately everywhere
+    /// else in this view; a move's exit animation shouldn't be the one
+    /// exception that lags behind it.
+    private func reconcileUndoneMoves() {
+        guard !fadingMoveIDs.isEmpty, let rows = model.snapshot?.rows else { return }
+        let backInView = fadingMoveIDs.intersection(Set(rows.map(\.id)))
+        guard !backInView.isEmpty else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            for id in backInView {
+                fadingMoveTasks[id]?.cancel()
+                fadingMoveTasks[id] = nil
+                fadingMoveRows.removeValue(forKey: id)
+                fadingMoveAnchors.removeValue(forKey: id)
+                fadingMoveIDs.remove(id)
+            }
+        }
     }
 
     private var canEditFocusedRow: Bool {
@@ -368,32 +516,40 @@ struct CaptureView: SwiftUI.View {
         }
     }
 
-    /// Active rows in their natural order, with each ghost reinserted right
-    /// after the anchor it was captured with -- never at the front -- so a
-    /// row's index never changes across a complete/un-complete cycle. Any
-    /// id still in `ghosts` is excluded from `active` unconditionally (not
-    /// just while genuinely completed): while reviving, the row is still in
-    /// `ghosts` *and* may briefly also still be in the stale snapshot, and
-    /// without this filter it would render twice for a frame.
-    private var displayRows: [(row: TaskRow, completed: Bool)] {
-        let ghostIDs = Set(ghosts.map(\.id))
-        let active = (model.snapshot?.rows ?? []).filter { !ghostIDs.contains($0.id) }
-        func ghostsAnchored(to anchor: String) -> [(TaskRow, Bool)] {
-            ghosts.filter { ghostAnchors[$0.id] == anchor }
-                .map { ($0, !revivedIDs.contains($0.id)) }
+    /// Active rows in their natural order, with each completion ghost and
+    /// each fading-move row reinserted right after the anchor it was
+    /// captured with -- never at the front -- so a row's index never
+    /// changes across a complete/un-complete cycle or a move's fade-out.
+    /// Any id still in `ghosts` or `fadingMoveIDs` is excluded from `active`
+    /// unconditionally (not just while genuinely completed/fading): while
+    /// reviving a ghost, or right after a move dispatches, the row is still
+    /// in the overlay set *and* may briefly also still be in the stale
+    /// snapshot, and without this filter it would render twice for a frame.
+    private var displayRows: [(row: TaskRow, completed: Bool, fading: Bool)] {
+        let overlayIDs = Set(ghosts.map(\.id)).union(fadingMoveIDs)
+        let active = (model.snapshot?.rows ?? []).filter { !overlayIDs.contains($0.id) }
+
+        func overlaysAnchored(to anchor: String) -> [(TaskRow, Bool, Bool)] {
+            let ghostEntries = ghosts.filter { ghostAnchors[$0.id] == anchor }
+                .map { ($0, !revivedIDs.contains($0.id), false) }
+            let fadingEntries = fadingMoveIDs.filter { fadingMoveAnchors[$0] == anchor }
+                .compactMap { id in fadingMoveRows[id].map { (row: $0, completed: false, fading: true) } }
+            return ghostEntries + fadingEntries
         }
 
-        var result = ghostsAnchored(to: "")
+        var result = overlaysAnchored(to: "")
         for row in active {
-            result.append((row, false))
-            result += ghostsAnchored(to: row.id)
+            result.append((row, false, false))
+            result += overlaysAnchored(to: row.id)
         }
-        // A ghost whose anchor row is itself gone (e.g. also completed, or
-        // deleted) has nowhere to be reinserted -- fall back to the end
-        // rather than dropping it.
+        // An overlay row whose anchor is itself gone (e.g. also completed,
+        // also moved, or deleted) has nowhere to be reinserted -- fall back
+        // to the end rather than dropping it.
         let placedIDs = Set(result.map(\.0.id))
         result += ghosts.filter { !placedIDs.contains($0.id) }
-            .map { ($0, !revivedIDs.contains($0.id)) }
+            .map { ($0, !revivedIDs.contains($0.id), false) }
+        result += fadingMoveIDs.filter { !placedIDs.contains($0) }
+            .compactMap { id in fadingMoveRows[id].map { (row: $0, completed: false, fading: true) } }
         return result
     }
 
@@ -505,14 +661,18 @@ struct CaptureView: SwiftUI.View {
 /// destination when it differs from the one being viewed -- i.e. while
 /// viewing "All", since picking a concrete list always makes it both (see
 /// `TodoModel.setCurrentList`'s own doc comment on why "All" doesn't change
-/// the sticky destination).
+/// the sticky destination). `blinkingListID`, set by `CaptureView.blink`,
+/// briefly highlights whichever pill just received a task moved into it by
+/// ⌘⌥2–⌘⌥9 -- the only feedback for that move while viewing "All", where the
+/// moved row doesn't otherwise visibly disappear.
 private struct ListPillRow: SwiftUI.View {
     @Environment(TodoModel.self) private var model
     var onOpenListsSettings: () -> Void
+    var blinkingListID: String?
 
     var body: some SwiftUI.View {
         FlowLayout(spacing: 6) {
-            pill(label: "All", shortcutDigit: 1, isSelected: isAll, showsCaptureDot: false) {
+            pill(label: "All", shortcutDigit: 1, isSelected: isAll, showsCaptureDot: false, isBlinking: false) {
                 model.setCurrentList(.all)
             }
             ForEach(Array((model.snapshot?.lists ?? []).enumerated()), id: \.element.id) { index, list in
@@ -524,7 +684,8 @@ private struct ListPillRow: SwiftUI.View {
                     // one that doesn't exist.
                     shortcutDigit: index < 8 ? index + 2 : nil,
                     isSelected: isSelected(list.id),
-                    showsCaptureDot: isAll && model.snapshot?.captureListId == list.id
+                    showsCaptureDot: isAll && model.snapshot?.captureListId == list.id,
+                    isBlinking: list.id == blinkingListID
                 ) {
                     model.setCurrentList(.list(id: list.id))
                 }
@@ -558,6 +719,7 @@ private struct ListPillRow: SwiftUI.View {
         shortcutDigit: Int?,
         isSelected: Bool,
         showsCaptureDot: Bool,
+        isBlinking: Bool,
         action: @escaping () -> Void
     ) -> some SwiftUI.View {
         Button(action: action) {
@@ -577,7 +739,15 @@ private struct ListPillRow: SwiftUI.View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .background(isSelected ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.1), in: Capsule())
+            .background(
+                // `isBlinking` wins over `isSelected` -- the flash is a
+                // momentary "something just landed here" signal and should
+                // read as such even on the pill you're currently viewing.
+                isBlinking
+                    ? Color.accentColor.opacity(0.4)
+                    : (isSelected ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.1)),
+                in: Capsule()
+            )
             .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
         }
         .buttonStyle(.plain)
@@ -642,6 +812,12 @@ private struct PillRowHeightKey: PreferenceKey {
 private struct CaptureTaskRow: SwiftUI.View {
     let row: TaskRow
     let completed: Bool
+    /// True while this row is fading out after being moved to a different
+    /// list (see `CaptureView.fadingMoveIDs`). Purely visual -- the row is
+    /// already gone from the live data, this is its exit animation -- so
+    /// it's rendered dimmed and made non-interactive rather than, say,
+    /// still toggleable like a completion ghost is.
+    let fading: Bool
     let isFocused: Bool
     let isEditing: Bool
     @Binding var editText: String
@@ -693,6 +869,11 @@ private struct CaptureTaskRow: SwiftUI.View {
         .contentShape(Rectangle())
         .onTapGesture(perform: onFocusRequest)
         .animation(.easeOut(duration: 0.2), value: completed)
+        .opacity(fading ? 0.3 : 1)
+        // Inert, not just dimmed: it's already gone from the list this
+        // panel is showing, so clicking it (toggle, focus, edit) shouldn't
+        // do anything until it's fully removed.
+        .allowsHitTesting(!fading)
     }
 }
 
