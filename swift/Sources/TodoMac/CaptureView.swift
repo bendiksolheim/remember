@@ -12,7 +12,7 @@ import TodoKit
 /// list, inline title editing ("e" on the focused row), reordering the
 /// focused row (alt+shift+j/alt+shift+k), switching the sticky current list
 /// (`ListPillRow`), and moving the focused row to a different list
-/// (⌘⌥2–⌘⌥9, mirroring the plain ⌘2–⌘9 switch shortcuts -- see
+/// (⌘⌥1–⌘⌥9, mirroring the plain ⌘1–⌘9 switch shortcuts -- see
 /// `moveFocusedRow`). Deleting is still out of scope here -- that remains
 /// reachable only via `TodoUI`'s `TaskListView`, which iOS still uses but
 /// this target no longer wires up.
@@ -224,32 +224,34 @@ struct CaptureView: SwiftUI.View {
                     .keyboardShortcut("z", modifiers: .command)
                 Button("Redo") { model.dispatch(.redo) }
                     .keyboardShortcut("z", modifiers: [.command, .shift])
-                // ⌘1 jumps to All, ⌘2–⌘9 to the first 8 lists in sidebar
+                // ⌘0 jumps to All, ⌘1–⌘9 to the first 9 lists in sidebar
                 // order — the keyboard half of the pill row below, so
                 // switching lists never requires reaching for the mouse.
+                // All gets the least reachable digit deliberately: it's
+                // the least-used list once the user has their own lists
+                // set up, so it shouldn't squat on the easiest shortcut.
                 // Lives here (not inside `ListPillRow`) to keep every
                 // global shortcut owned by this one overlay, same as
                 // Undo/Redo/Toggle/Edit above.
                 Button("Select All List") { model.setCurrentList(.all) }
-                    .keyboardShortcut("1", modifiers: .command)
-                ForEach(Array((model.snapshot?.lists ?? []).prefix(8).enumerated()), id: \.element.id) { index, list in
+                    .keyboardShortcut("0", modifiers: .command)
+                ForEach(Array((model.snapshot?.lists ?? []).prefix(9).enumerated()), id: \.element.id) { index, list in
                     Button("Select \(list.name) List") { model.setCurrentList(.list(id: list.id)) }
-                        .keyboardShortcut(KeyEquivalent(Character("\(index + 2)")), modifiers: .command)
+                        .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
                 }
-                // ⌘⌥2–⌘⌥9: move the focused row into one of the same first
-                // 8 lists ⌘2–⌘9 switch to -- deliberately the same digit
+                // ⌘⌥1–⌘⌥9: move the focused row into one of the same first
+                // 9 lists ⌘1–⌘9 switch to -- deliberately the same digit
                 // mapping, Option added to mean "send it there" instead of
                 // "go there". Not Shift: ⌘⇧3/4/5 (and ⌘⇧6 on Touch Bar
                 // Macs) are macOS's own screenshot shortcuts system-wide,
                 // and partially shadowing only *some* digits in one
                 // mnemonic set would be worse than using a different
-                // modifier for all of them. There's no ⌘⌥1: digit 1 is
-                // "All" in the switch mapping, and a task can't be moved
-                // into a filter that isn't a real list, so that digit is
-                // simply never bound to a move button at all.
-                ForEach(Array((model.snapshot?.lists ?? []).prefix(8).enumerated()), id: \.element.id) { index, list in
+                // modifier for all of them. There's no ⌘⌥0: a task can't
+                // be moved into a filter that isn't a real list, so that
+                // digit is simply never bound to a move button at all.
+                ForEach(Array((model.snapshot?.lists ?? []).prefix(9).enumerated()), id: \.element.id) { index, list in
                     Button("Move Focused to \(list.name) List") { moveFocusedRow(to: list.id) }
-                        .keyboardShortcut(KeyEquivalent(Character("\(index + 2)")), modifiers: [.command, .option])
+                        .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: [.command, .option])
                 }
                 // Bare Space with no modifier would otherwise swallow the
                 // spacebar while the quick-add field is focused, so this is
@@ -366,8 +368,8 @@ struct CaptureView: SwiftUI.View {
         toggle(id: id)
     }
 
-    /// ⌘⌥2–⌘⌥9: moves the focused row into `listId` (always one of the
-    /// first 8 lists -- see the overlay buttons above). Silently does
+    /// ⌘⌥1–⌘⌥9: moves the focused row into `listId` (always one of the
+    /// first 9 lists -- see the overlay buttons above). Silently does
     /// nothing if there's no eligible focused row at all (no focus, mid
     /// rename, or a completion ghost -- renaming/reviving and moving don't
     /// mix, same reasoning as `canEditFocusedRow`) or if the row is already
@@ -650,21 +652,23 @@ struct CaptureView: SwiftUI.View {
 /// window (see `SettingsWindowController`'s Lists pane, reachable via the
 /// trailing "+" pill, for creating/renaming/deleting lists instead).
 /// Replaces the old flat `Menu`-based switcher: every list is a visible,
-/// one-click pill instead of being hidden until opened, and ⌘1–⌘9 (wired in
+/// one-click pill instead of being hidden until opened, and ⌘0–⌘9 (wired in
 /// `CaptureView`'s overlay above) switch lists without touching the mouse
 /// at all -- each pill that has one shows its own "⌘n" on the left so the
 /// mapping never has to be memorized or counted out by eye as the roster
-/// grows (only the first 8 lists get one; see `pill`'s `shortcutDigit`).
-/// "All" is pinned first and isn't reorderable; the rest follow
-/// `snapshot.lists`' sidebar order, which `MoveList`/`ListsSettingsView`
-/// already manage. A small dot marks whichever list is the actual capture
-/// destination when it differs from the one being viewed -- i.e. while
-/// viewing "All", since picking a concrete list always makes it both (see
-/// `TodoModel.setCurrentList`'s own doc comment on why "All" doesn't change
-/// the sticky destination). `blinkingListID`, set by `CaptureView.blink`,
-/// briefly highlights whichever pill just received a task moved into it by
-/// ⌘⌥2–⌘⌥9 -- the only feedback for that move while viewing "All", where the
-/// moved row doesn't otherwise visibly disappear.
+/// grows (only the first 9 lists get one; see `pill`'s `shortcutDigit`).
+/// "All" is pinned first and isn't reorderable, deliberately sitting on the
+/// least reachable digit (⌘0) since it's the least-used list once the user
+/// has their own lists set up; the rest follow `snapshot.lists`' sidebar
+/// order, which `MoveList`/`ListsSettingsView` already manage. A small dot
+/// marks whichever list is the actual capture destination when it differs
+/// from the one being viewed -- i.e. while viewing "All", since picking a
+/// concrete list always makes it both (see `TodoModel.setCurrentList`'s own
+/// doc comment on why "All" doesn't change the sticky destination).
+/// `blinkingListID`, set by `CaptureView.blink`, briefly highlights
+/// whichever pill just received a task moved into it by ⌘⌥1–⌘⌥9 -- the only
+/// feedback for that move while viewing "All", where the moved row doesn't
+/// otherwise visibly disappear.
 private struct ListPillRow: SwiftUI.View {
     @Environment(TodoModel.self) private var model
     var onOpenListsSettings: () -> Void
@@ -672,17 +676,17 @@ private struct ListPillRow: SwiftUI.View {
 
     var body: some SwiftUI.View {
         FlowLayout(spacing: 6) {
-            pill(label: "All", shortcutDigit: 1, isSelected: isAll, showsCaptureDot: false, isBlinking: false) {
+            pill(label: "All", shortcutDigit: 0, isSelected: isAll, showsCaptureDot: false, isBlinking: false) {
                 model.setCurrentList(.all)
             }
             ForEach(Array((model.snapshot?.lists ?? []).enumerated()), id: \.element.id) { index, list in
                 pill(
                     label: list.name,
-                    // Only the first 8 lists have a ⌘-shortcut at all (⌘2–⌘9
+                    // Only the first 9 lists have a ⌘-shortcut at all (⌘1–⌘9
                     // — see the hidden buttons in `CaptureView`'s overlay);
                     // nil here just omits the hint, it never misrepresents
                     // one that doesn't exist.
-                    shortcutDigit: index < 8 ? index + 2 : nil,
+                    shortcutDigit: index < 9 ? index + 1 : nil,
                     isSelected: isSelected(list.id),
                     showsCaptureDot: isAll && model.snapshot?.captureListId == list.id,
                     isBlinking: list.id == blinkingListID
