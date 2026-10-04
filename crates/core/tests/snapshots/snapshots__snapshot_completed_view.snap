@@ -1,7 +1,7 @@
 ---
 source: crates/core/tests/snapshots.rs
-assertion_line: 168
-expression: "doc.read(ViewFilter::Completed, ListFilter::All, &clock)"
+assertion_line: 178
+expression: "doc.read(ViewFilter::Completed, \"default\", &clock)"
 ---
 rows:
   - id: "5"
@@ -23,8 +23,7 @@ rows:
     list_id: default
     list_name: Tasks
 view: Completed
-current_list: All
-capture_list_id: ""
+current_list: default
 lists:
   - id: default
     name: Tasks

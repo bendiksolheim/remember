@@ -50,12 +50,8 @@ public struct TaskListView: SwiftUI.View {
         .toolbar {
             ToolbarItem {
                 Menu {
-                    Button("All") { model.setCurrentList(.all) }
-                    if let lists = model.snapshot?.lists, !lists.isEmpty {
-                        Divider()
-                        ForEach(lists, id: \.id) { list in
-                            Button(list.name) { model.setCurrentList(.list(id: list.id)) }
-                        }
+                    ForEach(model.snapshot?.lists ?? [], id: \.id) { list in
+                        Button(list.name) { model.setCurrentList(list.id) }
                     }
                 } label: {
                     Label(currentListLabel, systemImage: "line.3.horizontal.decrease.circle")
@@ -92,13 +88,8 @@ public struct TaskListView: SwiftUI.View {
     }
 
     private var currentListLabel: String {
-        guard let snapshot = model.snapshot else { return "All" }
-        switch snapshot.currentList {
-        case .all:
-            return "All"
-        case .list(let id):
-            return snapshot.lists.first(where: { $0.id == id })?.name ?? "All"
-        }
+        guard let snapshot = model.snapshot else { return "Tasks" }
+        return snapshot.lists.first(where: { $0.id == snapshot.currentList })?.name ?? "Tasks"
     }
 
     private func addTask() {

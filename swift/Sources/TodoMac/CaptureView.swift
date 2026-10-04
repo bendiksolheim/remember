@@ -231,19 +231,13 @@ struct CaptureView: SwiftUI.View {
                     .keyboardShortcut("z", modifiers: .command)
                 Button("Redo") { model.dispatch(.redo) }
                     .keyboardShortcut("z", modifiers: [.command, .shift])
-                // ⌘0 jumps to All, ⌘1–⌘9 to the first 9 lists in sidebar
-                // order — the keyboard half of the pill row below, so
-                // switching lists never requires reaching for the mouse.
-                // All gets the least reachable digit deliberately: it's
-                // the least-used list once the user has their own lists
-                // set up, so it shouldn't squat on the easiest shortcut.
-                // Lives here (not inside `ListPillRow`) to keep every
-                // global shortcut owned by this one overlay, same as
-                // Undo/Redo/Toggle/Edit above.
-                Button("Select All List") { model.setCurrentList(.all) }
-                    .keyboardShortcut("0", modifiers: .command)
+                // ⌘1–⌘9 jump to the first 9 lists in sidebar order — the
+                // keyboard half of the pill row below, so switching lists
+                // never requires reaching for the mouse. Lives here (not
+                // inside `ListPillRow`) to keep every global shortcut owned
+                // by this one overlay, same as Undo/Redo/Toggle/Edit above.
                 ForEach(Array((model.snapshot?.lists ?? []).prefix(9).enumerated()), id: \.element.id) { index, list in
-                    Button("Select \(list.name) List") { model.setCurrentList(.list(id: list.id)) }
+                    Button("Select \(list.name) List") { model.setCurrentList(list.id) }
                         .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
                 }
                 // ⌘⌥1–⌘⌥9: move the focused row into one of the same first
@@ -253,9 +247,7 @@ struct CaptureView: SwiftUI.View {
                 // Macs) are macOS's own screenshot shortcuts system-wide,
                 // and partially shadowing only *some* digits in one
                 // mnemonic set would be worse than using a different
-                // modifier for all of them. There's no ⌘⌥0: a task can't
-                // be moved into a filter that isn't a real list, so that
-                // digit is simply never bound to a move button at all.
+                // modifier for all of them.
                 ForEach(Array((model.snapshot?.lists ?? []).prefix(9).enumerated()), id: \.element.id) { index, list in
                     Button("Move Focused to \(list.name) List") { moveFocusedRow(to: list.id) }
                         .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: [.command, .option])
@@ -406,21 +398,12 @@ struct CaptureView: SwiftUI.View {
         model.dispatch(.setList(id: id, listId: listId))
         focus = successor
 
-        // Under "All", the row never actually leaves the displayed set --
-        // it's still there, just recategorized -- so fading it out would
-        // look like it's being removed and then mysteriously isn't. Only
-        // fade when the current filter is a single list the row is truly
-        // about to drop out of.
-        var isAllView = false
-        if case .all = model.snapshot?.currentList { isAllView = true }
-        if !isAllView {
-            withAnimation(.easeOut(duration: 0.5)) {
-                fadingMoveAnchors[id] = index > 0 ? rows[index - 1].id : ""
-                fadingMoveRows[id] = row
-                fadingMoveIDs.insert(id)
-            }
-            scheduleMoveFadeRemoval(id: id)
+        withAnimation(.easeOut(duration: 0.5)) {
+            fadingMoveAnchors[id] = index > 0 ? rows[index - 1].id : ""
+            fadingMoveRows[id] = row
+            fadingMoveIDs.insert(id)
         }
+        scheduleMoveFadeRemoval(id: id)
 
         blink(listId: listId)
     }
@@ -436,11 +419,11 @@ struct CaptureView: SwiftUI.View {
         }
     }
 
-    /// Flashes `listId`'s pill in `ListPillRow` briefly -- the move's only
-    /// feedback when the row itself doesn't visibly disappear (the "All"
-    /// case above). Animated on both ends: a quick flash in, then an
-    /// explicit fade back out, rather than just snapping the highlight away
-    /// after the delay.
+    /// Flashes `listId`'s pill in `ListPillRow` briefly -- secondary
+    /// feedback alongside the row's own fade-out, confirming where it
+    /// landed. Animated on both ends: a quick flash in, then an explicit
+    /// fade back out, rather than just snapping the highlight away after
+    /// the delay.
     private func blink(listId: String) {
         withAnimation(.easeInOut(duration: 0.15)) {
             blinkingListID = listId
@@ -659,23 +642,16 @@ struct CaptureView: SwiftUI.View {
 /// window (see `SettingsWindowController`'s Lists pane, reachable via the
 /// trailing "+" pill, for creating/renaming/deleting lists instead).
 /// Replaces the old flat `Menu`-based switcher: every list is a visible,
-/// one-click pill instead of being hidden until opened, and ⌘0–⌘9 (wired in
+/// one-click pill instead of being hidden until opened, and ⌘1–⌘9 (wired in
 /// `CaptureView`'s overlay above) switch lists without touching the mouse
 /// at all -- each pill that has one shows its own "⌘n" on the left so the
 /// mapping never has to be memorized or counted out by eye as the roster
 /// grows (only the first 9 lists get one; see `pill`'s `shortcutDigit`).
-/// "All" is pinned first and isn't reorderable, deliberately sitting on the
-/// least reachable digit (⌘0) since it's the least-used list once the user
-/// has their own lists set up; the rest follow `snapshot.lists`' sidebar
-/// order, which `MoveList`/`ListsSettingsView` already manage. A small dot
-/// marks whichever list is the actual capture destination when it differs
-/// from the one being viewed -- i.e. while viewing "All", since picking a
-/// concrete list always makes it both (see `TodoModel.setCurrentList`'s own
-/// doc comment on why "All" doesn't change the sticky destination).
-/// `blinkingListID`, set by `CaptureView.blink`, briefly highlights
-/// whichever pill just received a task moved into it by ⌘⌥1–⌘⌥9 -- the only
-/// feedback for that move while viewing "All", where the moved row doesn't
-/// otherwise visibly disappear.
+/// Follows `snapshot.lists`' sidebar order, which `MoveList`/
+/// `ListsSettingsView` already manage. `blinkingListID`, set by
+/// `CaptureView.blink`, briefly highlights whichever pill just received a
+/// task moved into it by ⌘⌥1–⌘⌥9 -- secondary feedback alongside the moved
+/// row's own fade-out.
 private struct ListPillRow: SwiftUI.View {
     @Environment(TodoModel.self) private var model
     var onOpenListsSettings: () -> Void
@@ -683,17 +659,6 @@ private struct ListPillRow: SwiftUI.View {
 
     var body: some SwiftUI.View {
         FlowLayout(spacing: 6) {
-            pill(
-                label: "All",
-                shortcutDigit: 0,
-                isSelected: isAll,
-                showsCaptureDot: false,
-                isBlinking: false,
-                color: .accentColor,
-                textColor: readableTextColor(on: .accentColor)
-            ) {
-                model.setCurrentList(.all)
-            }
             ForEach(Array((model.snapshot?.lists ?? []).enumerated()), id: \.element.id) { index, list in
                 pill(
                     label: list.name,
@@ -703,12 +668,11 @@ private struct ListPillRow: SwiftUI.View {
                     // one that doesn't exist.
                     shortcutDigit: index < 9 ? index + 1 : nil,
                     isSelected: isSelected(list.id),
-                    showsCaptureDot: isAll && model.snapshot?.captureListId == list.id,
                     isBlinking: list.id == blinkingListID,
                     color: color(for: list.color),
                     textColor: pillTextColor(for: list.color)
                 ) {
-                    model.setCurrentList(.list(id: list.id))
+                    model.setCurrentList(list.id)
                 }
             }
             Button(action: onOpenListsSettings) {
@@ -723,25 +687,14 @@ private struct ListPillRow: SwiftUI.View {
         }
     }
 
-    private var isAll: Bool {
-        guard let snapshot = model.snapshot else { return true }
-        if case .all = snapshot.currentList { return true }
-        return false
-    }
-
     private func isSelected(_ id: String) -> Bool {
-        guard let snapshot = model.snapshot, case .list(let current) = snapshot.currentList else { return false }
-        return current == id
+        model.snapshot?.currentList == id
     }
 
-    /// `color` is this pill's identity hue (a real list's `ListColor`, or
-    /// `.accentColor` for "All" -- every pill has one now, there's no more
-    /// neutral/colorless case). `textColor` is what the solid-fill states
-    /// below use, since hue-matched text on a hue-matched fill reads as
-    /// low-contrast no matter how the opacity is tuned -- callers pass
-    /// `pillTextColor(for:)` for a real list, or `readableTextColor(on:)` for
-    /// `.accentColor`, which isn't one of the 9 fixed `ListColor` cases and
-    /// can't be hardcoded (it's the user's macOS system accent color).
+    /// `color` is this pill's identity hue (a real list's `ListColor`).
+    /// `textColor` is what the solid-fill states below use, since
+    /// hue-matched text on a hue-matched fill reads as low-contrast no
+    /// matter how the opacity is tuned -- callers pass `pillTextColor(for:)`.
     ///
     /// Resting and selected are no longer the same hue at different
     /// opacities: resting is an outline on a clear fill (hue-on-near-neutral,
@@ -756,7 +709,6 @@ private struct ListPillRow: SwiftUI.View {
         label: String,
         shortcutDigit: Int?,
         isSelected: Bool,
-        showsCaptureDot: Bool,
         isBlinking: Bool,
         color: Color,
         textColor: Color,
@@ -774,11 +726,6 @@ private struct ListPillRow: SwiftUI.View {
                 }
                 Text(label)
                     .font(.system(size: 12, weight: .medium))
-                if showsCaptureDot {
-                    Circle()
-                        .fill(color)
-                        .frame(width: 5, height: 5)
-                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
@@ -797,20 +744,6 @@ private struct ListPillRow: SwiftUI.View {
         // part of the alt+j/alt+k row-focus chain or Tab order.
         .focusable(false)
     }
-}
-
-/// Readable text color for a solid pill fill whose color isn't one of the 9
-/// fixed `ListColor` cases -- i.e. `.accentColor`, which is a user-level
-/// macOS System Settings choice (blue, graphite, yellow, ...) and so can't be
-/// hardcoded the way `pillTextColor(for:)` hardcodes the known `ListColor`
-/// set. AppKit-only (`NSColor`), which is why this lives here rather than
-/// alongside `pillTextColor(for:)` in the cross-platform `TodoKit`.
-private func readableTextColor(on color: Color) -> Color {
-    let rgb = NSColor(color).usingColorSpace(.deviceRGB) ?? NSColor(color)
-    var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0
-    rgb.getRed(&r, green: &g, blue: &b, alpha: nil)
-    let luminance = 0.299 * r + 0.587 * g + 0.114 * b
-    return luminance > 0.6 ? .black : .white
 }
 
 /// Left-to-right, top-to-bottom wrapping layout -- SwiftUI has no built-in

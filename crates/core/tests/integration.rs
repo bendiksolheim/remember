@@ -1,6 +1,4 @@
-use todo_core::{
-    Command, CoreError, Doc, DueState, FixedClock, ListFilter, SeqIdSource, ViewFilter,
-};
+use todo_core::{Command, CoreError, Doc, DueState, FixedClock, SeqIdSource, ViewFilter};
 
 fn add(doc: &mut Doc, clock: &FixedClock, ids: &SeqIdSource, title: &str) -> String {
     doc.apply(
@@ -14,7 +12,7 @@ fn add(doc: &mut Doc, clock: &FixedClock, ids: &SeqIdSource, title: &str) -> Str
         ids,
     )
     .unwrap();
-    doc.read(ViewFilter::All, ListFilter::All, clock).rows[0]
+    doc.read(ViewFilter::All, "default", clock).rows[0]
         .id
         .clone()
 }
@@ -36,7 +34,7 @@ fn add_three_tasks_order_reflects_insertion() {
     add(&mut doc, &clock, &ids, "b");
     add(&mut doc, &clock, &ids, "c");
     // Each Add uses after:None ("insert at the top"), so order is LIFO.
-    let snap = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let snap = doc.read(ViewFilter::All, "default", &clock);
     assert_eq!(titles(&snap), vec!["c", "b", "a"]);
 }
 
@@ -58,13 +56,13 @@ fn add_after_none_inserts_at_top_after_some_inserts_after() {
     )
     .unwrap();
     assert_eq!(
-        titles(&doc.read(ViewFilter::All, ListFilter::All, &clock)),
+        titles(&doc.read(ViewFilter::All, "default", &clock)),
         vec!["a", "b"]
     );
 
     add(&mut doc, &clock, &ids, "c");
     assert_eq!(
-        titles(&doc.read(ViewFilter::All, ListFilter::All, &clock)),
+        titles(&doc.read(ViewFilter::All, "default", &clock)),
         vec!["c", "a", "b"]
     );
 }
@@ -113,7 +111,7 @@ fn set_title_updates_only_title() {
         &ids,
     )
     .unwrap();
-    let row = &doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0];
+    let row = &doc.read(ViewFilter::All, "default", &clock).rows[0];
     assert_eq!(row.title, "new");
     assert_eq!(row.notes, "note");
     assert!(!row.done);
@@ -125,7 +123,7 @@ fn set_title_to_current_value_is_noop() {
     let clock = FixedClock(0);
     let ids = SeqIdSource::new();
     let id = add(&mut doc, &clock, &ids, "a");
-    let before = doc.read(ViewFilter::All, ListFilter::All, &clock).revision;
+    let before = doc.read(ViewFilter::All, "default", &clock).revision;
     doc.apply(
         Command::SetTitle {
             id,
@@ -136,7 +134,7 @@ fn set_title_to_current_value_is_noop() {
     )
     .unwrap();
     assert_eq!(
-        doc.read(ViewFilter::All, ListFilter::All, &clock).revision,
+        doc.read(ViewFilter::All, "default", &clock).revision,
         before
     );
 }
@@ -157,7 +155,7 @@ fn set_title_trims_surrounding_whitespace() {
     )
     .unwrap();
     assert_eq!(
-        titles(&doc.read(ViewFilter::All, ListFilter::All, &clock)),
+        titles(&doc.read(ViewFilter::All, "default", &clock)),
         vec!["new title"]
     );
 }
@@ -168,7 +166,7 @@ fn set_title_empty_after_trim_is_noop() {
     let clock = FixedClock(0);
     let ids = SeqIdSource::new();
     let id = add(&mut doc, &clock, &ids, "a");
-    let before = doc.read(ViewFilter::All, ListFilter::All, &clock).revision;
+    let before = doc.read(ViewFilter::All, "default", &clock).revision;
     doc.apply(
         Command::SetTitle {
             id,
@@ -178,7 +176,7 @@ fn set_title_empty_after_trim_is_noop() {
         &ids,
     )
     .unwrap();
-    let snap = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let snap = doc.read(ViewFilter::All, "default", &clock);
     assert_eq!(snap.revision, before);
     assert_eq!(titles(&snap), vec!["a"]);
 }
@@ -226,7 +224,7 @@ fn add_trims_surrounding_whitespace() {
     let ids = SeqIdSource::new();
     add(&mut doc, &clock, &ids, "  a  ");
     assert_eq!(
-        titles(&doc.read(ViewFilter::All, ListFilter::All, &clock)),
+        titles(&doc.read(ViewFilter::All, "default", &clock)),
         vec!["a"]
     );
 }
@@ -236,7 +234,7 @@ fn add_empty_after_trim_is_noop() {
     let mut doc = Doc::new(1).unwrap();
     let clock = FixedClock(0);
     let ids = SeqIdSource::new();
-    let before = doc.read(ViewFilter::All, ListFilter::All, &clock).revision;
+    let before = doc.read(ViewFilter::All, "default", &clock).revision;
     doc.apply(
         Command::Add {
             title: "   ".to_string(),
@@ -248,7 +246,7 @@ fn add_empty_after_trim_is_noop() {
         &ids,
     )
     .unwrap();
-    let snap = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let snap = doc.read(ViewFilter::All, "default", &clock);
     assert_eq!(snap.revision, before);
     assert!(snap.rows.is_empty());
 }
@@ -259,11 +257,11 @@ fn set_done_to_current_value_is_noop() {
     let clock = FixedClock(0);
     let ids = SeqIdSource::new();
     let id = add(&mut doc, &clock, &ids, "a");
-    let before = doc.read(ViewFilter::All, ListFilter::All, &clock).revision;
+    let before = doc.read(ViewFilter::All, "default", &clock).revision;
     doc.apply(Command::SetDone { id, done: false }, &clock, &ids)
         .unwrap();
     assert_eq!(
-        doc.read(ViewFilter::All, ListFilter::All, &clock).revision,
+        doc.read(ViewFilter::All, "default", &clock).revision,
         before
     );
 }
@@ -283,7 +281,7 @@ fn set_notes_updates_only_notes() {
         &ids,
     )
     .unwrap();
-    let row = &doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0];
+    let row = &doc.read(ViewFilter::All, "default", &clock).rows[0];
     assert_eq!(row.title, "a");
     assert_eq!(row.notes, "hello");
 }
@@ -303,7 +301,7 @@ fn set_due_updates_only_due() {
         &ids,
     )
     .unwrap();
-    let row = &doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0];
+    let row = &doc.read(ViewFilter::All, "default", &clock).rows[0];
     assert_eq!(row.title, "a");
     assert_eq!(row.due, Some(1_000));
 }
@@ -323,7 +321,7 @@ fn set_due_none_clears_date_and_due_state() {
         &ids,
     )
     .unwrap();
-    let row = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0].clone();
+    let row = doc.read(ViewFilter::All, "default", &clock).rows[0].clone();
     assert_eq!(row.due_state, DueState::Overdue);
 
     doc.apply(
@@ -335,7 +333,7 @@ fn set_due_none_clears_date_and_due_state() {
         &ids,
     )
     .unwrap();
-    let row = &doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0];
+    let row = &doc.read(ViewFilter::All, "default", &clock).rows[0];
     assert_eq!(row.due, None);
     assert_eq!(row.due_label, None);
     assert_eq!(row.due_state, DueState::None);
@@ -352,7 +350,7 @@ fn move_to_first_last_middle_and_own_position_is_noop() {
     let d = add(&mut doc, &clock, &ids, "d");
     // after:None each time -> initial order: [d, c, b, a]
     assert_eq!(
-        ids_of(&doc.read(ViewFilter::All, ListFilter::All, &clock)),
+        ids_of(&doc.read(ViewFilter::All, "default", &clock)),
         vec![d.clone(), c.clone(), b.clone(), a.clone()]
     );
 
@@ -367,7 +365,7 @@ fn move_to_first_last_middle_and_own_position_is_noop() {
     )
     .unwrap();
     assert_eq!(
-        ids_of(&doc.read(ViewFilter::All, ListFilter::All, &clock)),
+        ids_of(&doc.read(ViewFilter::All, "default", &clock)),
         vec![a.clone(), d.clone(), c.clone(), b.clone()]
     );
 
@@ -382,7 +380,7 @@ fn move_to_first_last_middle_and_own_position_is_noop() {
     )
     .unwrap();
     assert_eq!(
-        ids_of(&doc.read(ViewFilter::All, ListFilter::All, &clock)),
+        ids_of(&doc.read(ViewFilter::All, "default", &clock)),
         vec![a.clone(), c.clone(), b.clone(), d.clone()]
     );
 
@@ -397,12 +395,12 @@ fn move_to_first_last_middle_and_own_position_is_noop() {
     )
     .unwrap();
     assert_eq!(
-        ids_of(&doc.read(ViewFilter::All, ListFilter::All, &clock)),
+        ids_of(&doc.read(ViewFilter::All, "default", &clock)),
         vec![a.clone(), b.clone(), c.clone(), d.clone()]
     );
 
     // Move 'b' after 'a' again: it's already there, so this is a no-op.
-    let before = ids_of(&doc.read(ViewFilter::All, ListFilter::All, &clock));
+    let before = ids_of(&doc.read(ViewFilter::All, "default", &clock));
     doc.apply(
         Command::Move {
             id: b.clone(),
@@ -413,7 +411,7 @@ fn move_to_first_last_middle_and_own_position_is_noop() {
     )
     .unwrap();
     assert_eq!(
-        ids_of(&doc.read(ViewFilter::All, ListFilter::All, &clock)),
+        ids_of(&doc.read(ViewFilter::All, "default", &clock)),
         before
     );
 }
@@ -465,7 +463,7 @@ fn delete_removes_from_both_maps() {
     add(&mut doc, &clock, &ids, "b");
     doc.apply(Command::Delete { id: a.clone() }, &clock, &ids)
         .unwrap();
-    let snap = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let snap = doc.read(ViewFilter::All, "default", &clock);
     assert_eq!(titles(&snap), vec!["b"]);
     assert!(snap.rows.iter().all(|r| r.id != a));
 }
@@ -494,11 +492,7 @@ fn set_done_hides_from_active_view_but_not_count() {
     let ids = SeqIdSource::new();
     let a = add(&mut doc, &clock, &ids, "a");
     add(&mut doc, &clock, &ids, "b");
-    assert_eq!(
-        doc.read(ViewFilter::All, ListFilter::All, &clock)
-            .active_count,
-        2
-    );
+    assert_eq!(doc.read(ViewFilter::All, "default", &clock).active_count, 2);
 
     doc.apply(
         Command::SetDone {
@@ -510,7 +504,7 @@ fn set_done_hides_from_active_view_but_not_count() {
     )
     .unwrap();
 
-    let active = doc.read(ViewFilter::Active, ListFilter::All, &clock);
+    let active = doc.read(ViewFilter::Active, "default", &clock);
     assert_eq!(active.active_count, 1);
     assert!(active.rows.iter().all(|r| r.id != a));
 }
@@ -532,7 +526,7 @@ fn completed_view_shows_only_done_tasks() {
     )
     .unwrap();
 
-    let completed = doc.read(ViewFilter::Completed, ListFilter::All, &clock);
+    let completed = doc.read(ViewFilter::Completed, "default", &clock);
     assert_eq!(titles(&completed), vec!["a"]);
     assert!(completed.rows[0].done);
 }
@@ -543,16 +537,13 @@ fn undo_restores_prior_snapshot_after_each_mutating_command() {
     let clock = FixedClock(0);
     let ids = SeqIdSource::new();
 
-    let empty = ids_of(&doc.read(ViewFilter::All, ListFilter::All, &clock));
+    let empty = ids_of(&doc.read(ViewFilter::All, "default", &clock));
     let id = add(&mut doc, &clock, &ids, "a");
     doc.apply(Command::Undo, &clock, &ids).unwrap();
-    assert_eq!(
-        ids_of(&doc.read(ViewFilter::All, ListFilter::All, &clock)),
-        empty
-    );
+    assert_eq!(ids_of(&doc.read(ViewFilter::All, "default", &clock)), empty);
 
     doc.apply(Command::Redo, &clock, &ids).unwrap();
-    let after_add = doc.read(ViewFilter::All, ListFilter::All, &clock).rows;
+    let after_add = doc.read(ViewFilter::All, "default", &clock).rows;
 
     doc.apply(
         Command::SetTitle {
@@ -564,10 +555,7 @@ fn undo_restores_prior_snapshot_after_each_mutating_command() {
     )
     .unwrap();
     doc.apply(Command::Undo, &clock, &ids).unwrap();
-    assert_eq!(
-        doc.read(ViewFilter::All, ListFilter::All, &clock).rows,
-        after_add
-    );
+    assert_eq!(doc.read(ViewFilter::All, "default", &clock).rows, after_add);
 }
 
 #[test]
@@ -576,19 +564,13 @@ fn redo_after_undo_restores_post_command_snapshot() {
     let clock = FixedClock(0);
     let ids = SeqIdSource::new();
     add(&mut doc, &clock, &ids, "a");
-    let after_add = doc.read(ViewFilter::All, ListFilter::All, &clock).rows;
+    let after_add = doc.read(ViewFilter::All, "default", &clock).rows;
 
     doc.apply(Command::Undo, &clock, &ids).unwrap();
-    assert!(doc
-        .read(ViewFilter::All, ListFilter::All, &clock)
-        .rows
-        .is_empty());
+    assert!(doc.read(ViewFilter::All, "default", &clock).rows.is_empty());
 
     doc.apply(Command::Redo, &clock, &ids).unwrap();
-    assert_eq!(
-        doc.read(ViewFilter::All, ListFilter::All, &clock).rows,
-        after_add
-    );
+    assert_eq!(doc.read(ViewFilter::All, "default", &clock).rows, after_add);
 }
 
 #[test]
@@ -596,12 +578,12 @@ fn undo_on_empty_history_is_noop() {
     let mut doc = Doc::new(1).unwrap();
     let clock = FixedClock(0);
     let ids = SeqIdSource::new();
-    let before = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let before = doc.read(ViewFilter::All, "default", &clock);
     assert!(!before.can_undo);
 
     doc.apply(Command::Undo, &clock, &ids).unwrap();
 
-    let after = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let after = doc.read(ViewFilter::All, "default", &clock);
     assert_eq!(after.revision, before.revision);
     assert_eq!(after.rows, before.rows);
 }
@@ -611,11 +593,11 @@ fn revision_strictly_increases_across_every_mutation() {
     let mut doc = Doc::new(1).unwrap();
     let clock = FixedClock(0);
     let ids = SeqIdSource::new();
-    let mut last = doc.read(ViewFilter::All, ListFilter::All, &clock).revision;
+    let mut last = doc.read(ViewFilter::All, "default", &clock).revision;
 
     let mut bump = |doc: &mut Doc, cmd: Command| {
         doc.apply(cmd, &clock, &ids).unwrap();
-        let rev = doc.read(ViewFilter::All, ListFilter::All, &clock).revision;
+        let rev = doc.read(ViewFilter::All, "default", &clock).revision;
         assert!(rev > last, "revision did not increase: {last} -> {rev}");
         last = rev;
     };
@@ -629,7 +611,7 @@ fn revision_strictly_increases_across_every_mutation() {
             list_id: None,
         },
     );
-    let id = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0]
+    let id = doc.read(ViewFilter::All, "default", &clock).rows[0]
         .id
         .clone();
     bump(
@@ -667,7 +649,7 @@ fn revision_strictly_increases_across_every_mutation() {
 fn empty_document_has_no_rows() {
     let doc = Doc::new(1).unwrap();
     let clock = FixedClock(0);
-    let snap = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let snap = doc.read(ViewFilter::All, "default", &clock);
     assert!(snap.rows.is_empty());
     assert_eq!(snap.active_count, 0);
 }
@@ -682,7 +664,7 @@ fn add_list(doc: &mut Doc, clock: &FixedClock, ids: &SeqIdSource, name: &str) ->
         ids,
     )
     .unwrap();
-    doc.read(ViewFilter::All, ListFilter::All, clock).lists[0]
+    doc.read(ViewFilter::All, "default", clock).lists[0]
         .id
         .clone()
 }
@@ -691,7 +673,7 @@ fn add_list(doc: &mut Doc, clock: &FixedClock, ids: &SeqIdSource, name: &str) ->
 fn fresh_doc_has_one_default_list_named_tasks() {
     let doc = Doc::new(1).unwrap();
     let clock = FixedClock(0);
-    let snap = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let snap = doc.read(ViewFilter::All, "default", &clock);
     assert_eq!(snap.lists.len(), 1);
     assert_eq!(snap.lists[0].name, "Tasks");
 }
@@ -702,7 +684,7 @@ fn add_lands_new_task_in_the_default_list() {
     let clock = FixedClock(0);
     let ids = SeqIdSource::new();
     add(&mut doc, &clock, &ids, "a");
-    let row = &doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0];
+    let row = &doc.read(ViewFilter::All, "default", &clock).rows[0];
     assert_eq!(row.list_id, "default");
     assert_eq!(row.list_name, "Tasks");
 }
@@ -726,7 +708,7 @@ fn add_with_explicit_list_id_stores_it_and_resolves_its_name() {
     )
     .unwrap();
 
-    let row = &doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0];
+    let row = &doc.read(ViewFilter::All, &work, &clock).rows[0];
     assert_eq!(row.list_id, work);
     assert_eq!(row.list_name, "Work");
 }
@@ -758,7 +740,7 @@ fn add_list_after_none_inserts_at_front() {
     let ids = SeqIdSource::new();
     add_list(&mut doc, &clock, &ids, "Work");
     let names: Vec<String> = doc
-        .read(ViewFilter::All, ListFilter::All, &clock)
+        .read(ViewFilter::All, "default", &clock)
         .lists
         .iter()
         .map(|l| l.name.clone())
@@ -771,7 +753,7 @@ fn add_list_after_some_inserts_after_that_list() {
     let mut doc = Doc::new(1).unwrap();
     let clock = FixedClock(0);
     let ids = SeqIdSource::new();
-    let default_id = doc.read(ViewFilter::All, ListFilter::All, &clock).lists[0]
+    let default_id = doc.read(ViewFilter::All, "default", &clock).lists[0]
         .id
         .clone();
     doc.apply(
@@ -784,7 +766,7 @@ fn add_list_after_some_inserts_after_that_list() {
     )
     .unwrap();
     let names: Vec<String> = doc
-        .read(ViewFilter::All, ListFilter::All, &clock)
+        .read(ViewFilter::All, "default", &clock)
         .lists
         .iter()
         .map(|l| l.name.clone())
@@ -797,7 +779,7 @@ fn add_list_empty_name_after_trim_is_noop() {
     let mut doc = Doc::new(1).unwrap();
     let clock = FixedClock(0);
     let ids = SeqIdSource::new();
-    let before = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let before = doc.read(ViewFilter::All, "default", &clock);
     doc.apply(
         Command::AddList {
             name: "   ".to_string(),
@@ -807,7 +789,7 @@ fn add_list_empty_name_after_trim_is_noop() {
         &ids,
     )
     .unwrap();
-    let after = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let after = doc.read(ViewFilter::All, "default", &clock);
     assert_eq!(after.lists.len(), before.lists.len());
     assert_eq!(after.revision, before.revision);
 }
@@ -845,7 +827,7 @@ fn rename_list_updates_name() {
         &ids,
     )
     .unwrap();
-    let snap = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let snap = doc.read(ViewFilter::All, "default", &clock);
     assert_eq!(
         snap.lists.iter().find(|l| l.id == work).unwrap().name,
         "Office"
@@ -876,7 +858,7 @@ fn rename_list_empty_name_after_trim_is_noop() {
     let clock = FixedClock(0);
     let ids = SeqIdSource::new();
     let work = add_list(&mut doc, &clock, &ids, "Work");
-    let before = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let before = doc.read(ViewFilter::All, "default", &clock);
     doc.apply(
         Command::RenameList {
             id: work,
@@ -886,7 +868,7 @@ fn rename_list_empty_name_after_trim_is_noop() {
         &ids,
     )
     .unwrap();
-    let after = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let after = doc.read(ViewFilter::All, "default", &clock);
     assert_eq!(after.revision, before.revision);
 }
 
@@ -896,7 +878,7 @@ fn rename_list_to_its_current_name_is_noop() {
     let clock = FixedClock(0);
     let ids = SeqIdSource::new();
     let work = add_list(&mut doc, &clock, &ids, "Work");
-    let before = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let before = doc.read(ViewFilter::All, "default", &clock);
     doc.apply(
         Command::RenameList {
             id: work,
@@ -906,7 +888,7 @@ fn rename_list_to_its_current_name_is_noop() {
         &ids,
     )
     .unwrap();
-    let after = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let after = doc.read(ViewFilter::All, "default", &clock);
     assert_eq!(after.revision, before.revision);
 }
 
@@ -932,7 +914,7 @@ fn delete_list_cascades_its_tasks_but_leaves_other_lists_alone() {
     doc.apply(Command::DeleteList { id: work.clone() }, &clock, &ids)
         .unwrap();
 
-    let snap = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let snap = doc.read(ViewFilter::All, "default", &clock);
     assert_eq!(titles(&snap), vec!["default task"]);
     assert!(!snap.lists.iter().any(|l| l.id == work));
 }
@@ -959,7 +941,7 @@ fn delete_last_remaining_list_is_rejected() {
     let mut doc = Doc::new(1).unwrap();
     let clock = FixedClock(0);
     let ids = SeqIdSource::new();
-    let default_id = doc.read(ViewFilter::All, ListFilter::All, &clock).lists[0]
+    let default_id = doc.read(ViewFilter::All, "default", &clock).lists[0]
         .id
         .clone();
     let err = doc
@@ -987,7 +969,7 @@ fn move_list_reorders() {
     .unwrap();
 
     let names: Vec<String> = doc
-        .read(ViewFilter::All, ListFilter::All, &clock)
+        .read(ViewFilter::All, "default", &clock)
         .lists
         .iter()
         .map(|l| l.name.clone())
@@ -1018,10 +1000,10 @@ fn move_list_to_its_own_position_is_noop() {
     let mut doc = Doc::new(1).unwrap();
     let clock = FixedClock(0);
     let ids = SeqIdSource::new();
-    let default_id = doc.read(ViewFilter::All, ListFilter::All, &clock).lists[0]
+    let default_id = doc.read(ViewFilter::All, "default", &clock).lists[0]
         .id
         .clone();
-    let before = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let before = doc.read(ViewFilter::All, "default", &clock);
     doc.apply(
         Command::MoveList {
             id: default_id,
@@ -1031,7 +1013,7 @@ fn move_list_to_its_own_position_is_noop() {
         &ids,
     )
     .unwrap();
-    let after = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let after = doc.read(ViewFilter::All, "default", &clock);
     assert_eq!(after.revision, before.revision);
 }
 
@@ -1054,7 +1036,7 @@ fn set_list_moves_task_to_the_top_of_its_new_list() {
     )
     .unwrap();
 
-    let snap = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let snap = doc.read(ViewFilter::All, &work, &clock);
     assert_eq!(snap.rows[0].id, a);
     assert_eq!(snap.rows[0].list_id, work);
 }
@@ -1065,7 +1047,7 @@ fn set_list_to_its_current_list_is_noop() {
     let clock = FixedClock(0);
     let ids = SeqIdSource::new();
     let a = add(&mut doc, &clock, &ids, "a");
-    let before = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let before = doc.read(ViewFilter::All, "default", &clock);
     doc.apply(
         Command::SetList {
             id: a,
@@ -1075,7 +1057,7 @@ fn set_list_to_its_current_list_is_noop() {
         &ids,
     )
     .unwrap();
-    let after = doc.read(ViewFilter::All, ListFilter::All, &clock);
+    let after = doc.read(ViewFilter::All, "default", &clock);
     assert_eq!(after.revision, before.revision);
 }
 
@@ -1135,14 +1117,14 @@ fn read_filters_rows_by_list_while_still_resolving_every_lists_name() {
     )
     .unwrap();
 
-    let work_only = doc.read(ViewFilter::All, ListFilter::List(work), &clock);
+    let work_only = doc.read(ViewFilter::All, &work, &clock);
     assert_eq!(titles(&work_only), vec!["work task"]);
     // Even scoped to one list, the full roster is still there (for a list
     // picker UI) — `lists` isn't itself filtered by `current_list`.
     assert_eq!(work_only.lists.len(), 2);
 
-    let everything = doc.read(ViewFilter::All, ListFilter::All, &clock);
-    assert_eq!(titles(&everything), vec!["work task", "default task"]);
+    let default_only = doc.read(ViewFilter::All, "default", &clock);
+    assert_eq!(titles(&default_only), vec!["default task"]);
 }
 
 #[test]
@@ -1150,11 +1132,11 @@ fn list_command_revisions_all_increase_on_real_change() {
     let mut doc = Doc::new(1).unwrap();
     let clock = FixedClock(0);
     let ids = SeqIdSource::new();
-    let mut last = doc.read(ViewFilter::All, ListFilter::All, &clock).revision;
+    let mut last = doc.read(ViewFilter::All, "default", &clock).revision;
 
     let mut bump = |doc: &mut Doc, cmd: Command| {
         doc.apply(cmd, &clock, &ids).unwrap();
-        let rev = doc.read(ViewFilter::All, ListFilter::All, &clock).revision;
+        let rev = doc.read(ViewFilter::All, "default", &clock).revision;
         assert!(rev > last, "revision did not increase: {last} -> {rev}");
         last = rev;
     };
@@ -1166,7 +1148,7 @@ fn list_command_revisions_all_increase_on_real_change() {
             after: None,
         },
     );
-    let work = doc.read(ViewFilter::All, ListFilter::All, &clock).lists[0]
+    let work = doc.read(ViewFilter::All, "default", &clock).lists[0]
         .id
         .clone();
     bump(
@@ -1185,7 +1167,7 @@ fn list_command_revisions_all_increase_on_real_change() {
             list_id: None,
         },
     );
-    let a = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0]
+    let a = doc.read(ViewFilter::All, "default", &clock).rows[0]
         .id
         .clone();
     bump(
@@ -1198,7 +1180,7 @@ fn list_command_revisions_all_increase_on_real_change() {
     // AddList(after: None) put "Office" at the front, so moving it to the
     // back (after the default list) is a real change, not a no-op.
     let default_id = doc
-        .read(ViewFilter::All, ListFilter::All, &clock)
+        .read(ViewFilter::All, "default", &clock)
         .lists
         .iter()
         .find(|l| l.id != work)

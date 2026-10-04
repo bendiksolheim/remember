@@ -94,13 +94,6 @@ pub enum DueState {
     Overdue,
 }
 
-/// Which list(s) a `Snapshot` reflects. Mirrors `todo_core::ListFilter`.
-#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
-pub enum ListFilter {
-    All,
-    List { id: String },
-}
-
 /// One entry in the `lists` roster — see `todo_core::ListRow`.
 #[derive(uniffi::Record, Clone)]
 pub struct ListRow {
@@ -150,10 +143,9 @@ pub struct DueDetection {
 pub struct Snapshot {
     pub rows: Vec<TaskRow>,
     pub view: View,
-    pub current_list: ListFilter,
-    /// The concrete list a new capture would land in right now, even while
-    /// `current_list` is `All`. See `todo_core::Snapshot::capture_list_id`.
-    pub capture_list_id: String,
+    /// The list `current()` reflects, and the one new captures land in —
+    /// always a concrete list id.
+    pub current_list: String,
     pub lists: Vec<ListRow>,
     pub active_count: u32,
     pub can_undo: bool,
@@ -214,12 +206,11 @@ impl App {
         self.inner.set_view(convert::view_to_core(view));
     }
 
-    /// Switches which list(s) `current()` reads, and — for a concrete list
-    /// — the sticky destination new captures land in. See
+    /// Switches which list `current()` reads and new captures land in. See
     /// `todo_core::App::set_current_list`'s own doc comment.
-    pub fn set_current_list(&self, list: ListFilter) -> Result<(), AppError> {
+    pub fn set_current_list(&self, list_id: String) -> Result<(), AppError> {
         self.inner
-            .set_current_list(convert::list_filter_to_core(list))
+            .set_current_list(list_id)
             .map_err(convert::app_error_from_core)
     }
 

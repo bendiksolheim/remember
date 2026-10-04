@@ -17,7 +17,7 @@ mod store;
 pub use clock::{Clock, IdSource, SystemClock, UuidSource};
 #[cfg(any(test, feature = "testing"))]
 pub use clock::{FixedClock, SeqIdSource};
-pub use command::{Command, ListFilter, ViewFilter};
+pub use command::{Command, ViewFilter};
 pub use doc::Doc;
 pub use snapshot::{DueDetection, DueState, ListColor, ListRow, Snapshot, TaskRow};
 pub use store::Store;
@@ -44,15 +44,9 @@ fn lock<'a, T>(mutex: &'a Mutex<T>) -> MutexGuard<'a, T> {
 struct AppState {
     doc: Doc,
     view: ViewFilter,
-    /// Which list(s) `current()` reads — can be `ListFilter::All`, unlike
-    /// `capture_list_id` below.
-    current_list: ListFilter,
-    /// The concrete list new captures land in — tracked separately from
-    /// `current_list` because that can be "All", and a new task always
-    /// needs one real destination list. Updated whenever `set_current_list`
-    /// is given a concrete list, left alone when it's given "All". See
-    /// `Store::load_capture_list`'s doc comment.
-    capture_list_id: String,
+    /// The list `current()` reads, and the one new captures land in —
+    /// always a concrete list id.
+    current_list: String,
 }
 
 type Listener = Arc<dyn Fn(&Snapshot) + Send + Sync>;
@@ -90,12 +84,8 @@ impl App {
             Some(bytes) => Doc::load(peer_id, &bytes)?,
             None => Doc::new(peer_id)?,
         };
-        let current_list = match store.load_current_list()? {
-            Some(id) => ListFilter::List(id),
-            None => ListFilter::All,
-        };
-        let capture_list_id = store
-            .load_capture_list()?
+        let current_list = store
+            .load_current_list()?
             .unwrap_or_else(|| doc::DEFAULT_LIST_ID.to_string());
 
         let shared = Arc::new(Shared {
@@ -103,7 +93,6 @@ impl App {
                 doc,
                 view: ViewFilter::default(),
                 current_list,
-                capture_list_id,
             }),
             store,
             clock: Arc::new(SystemClock),
@@ -138,7 +127,7 @@ impl App {
 
     pub fn dispatch(&self, command: Command) -> Result<(), CoreError> {
         let mut state = lock(&self.shared.state);
-        let command = Self::resolve_capture_list(command, &state.capture_list_id);
+        let command = Self::resolve_capture_list(command, &state.current_list);
         let deleted_list_id = match &command {
             Command::DeleteList { id } => Some(id.clone()),
             _ => None,
@@ -157,42 +146,32 @@ impl App {
         Ok(())
     }
 
-    /// Re-points `capture_list_id`/`current_list` when a successful
-    /// `DeleteList` just removed the list either was pointing at — otherwise
-    /// the next capture would fail with `NotFound` (or the view would keep
-    /// filtering on a list that no longer exists) until the user manually
-    /// picked a new one. Falls back to the first list in sidebar order;
-    /// `apply_delete_list`'s last-remaining-list guard means there's always
-    /// at least one left.
+    /// Re-points `current_list` when a successful `DeleteList` just removed
+    /// the list it was pointing at — otherwise the next capture would fail
+    /// with `NotFound` (or the view would keep filtering on a list that no
+    /// longer exists) until the user manually picked a new one. Falls back
+    /// to the first list in sidebar order; `apply_delete_list`'s
+    /// last-remaining-list guard means there's always at least one left.
     fn repair_list_pointers(
         &self,
         state: &mut AppState,
         deleted_id: &str,
     ) -> Result<(), CoreError> {
-        let capture_needs_repair = state.capture_list_id == deleted_id;
-        let current_needs_repair =
-            matches!(&state.current_list, ListFilter::List(id) if id == deleted_id);
-        if !capture_needs_repair && !current_needs_repair {
+        if state.current_list != deleted_id {
             return Ok(());
         }
 
         let snapshot = state
             .doc
-            .read(ViewFilter::All, ListFilter::All, self.shared.clock.as_ref());
+            .read(ViewFilter::All, deleted_id, self.shared.clock.as_ref());
         let fallback_id = snapshot
             .lists
             .first()
             .map(|list| list.id.clone())
             .ok_or_else(|| CoreError::Document("no lists remain after delete".to_string()))?;
 
-        if capture_needs_repair {
-            self.shared.store.save_capture_list(&fallback_id)?;
-            state.capture_list_id = fallback_id.clone();
-        }
-        if current_needs_repair {
-            self.shared.store.save_current_list(Some(&fallback_id))?;
-            state.current_list = ListFilter::List(fallback_id);
-        }
+        self.shared.store.save_current_list(&fallback_id)?;
+        state.current_list = fallback_id;
         Ok(())
     }
 
@@ -239,26 +218,12 @@ impl App {
         self.notify();
     }
 
-    /// Switches which list(s) `current()` reads, persisting the choice (see
-    /// `Store::load_current_list`) so it survives a restart. When `list` is
-    /// a concrete list, also updates the sticky capture destination — see
-    /// `capture_list_id`'s own doc comment for why "All" doesn't.
-    pub fn set_current_list(&self, list: ListFilter) -> Result<(), CoreError> {
-        self.shared.store.save_current_list(match &list {
-            ListFilter::All => None,
-            ListFilter::List(id) => Some(id.as_str()),
-        })?;
-        if let ListFilter::List(id) = &list {
-            self.shared.store.save_capture_list(id)?;
-        }
-
-        let mut state = lock(&self.shared.state);
-        if let ListFilter::List(id) = &list {
-            state.capture_list_id = id.clone();
-        }
-        state.current_list = list;
-        drop(state);
-
+    /// Switches which list `current()` reads and new captures land in,
+    /// persisting the choice (see `Store::load_current_list`) so it
+    /// survives a restart.
+    pub fn set_current_list(&self, list_id: String) -> Result<(), CoreError> {
+        self.shared.store.save_current_list(&list_id)?;
+        lock(&self.shared.state).current_list = list_id;
         self.notify();
         Ok(())
     }
@@ -298,13 +263,9 @@ impl App {
 
     pub fn current(&self) -> Snapshot {
         let state = lock(&self.shared.state);
-        let mut snapshot = state.doc.read(
-            state.view,
-            state.current_list.clone(),
-            self.shared.clock.as_ref(),
-        );
-        snapshot.capture_list_id = state.capture_list_id.clone();
-        snapshot
+        state
+            .doc
+            .read(state.view, &state.current_list, self.shared.clock.as_ref())
     }
 
     pub fn flush(&self) -> Result<(), CoreError> {

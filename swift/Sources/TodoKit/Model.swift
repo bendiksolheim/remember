@@ -84,13 +84,13 @@ public final class TodoModel {
 
     public func setView(_ view: View) { app.setView(view: view) }
 
-    /// Switches which list(s) the snapshot reflects (`snapshot?.currentList`)
-    /// and, for a concrete list, the sticky destination new captures land in
-    /// — see `todo_core::App::set_current_list`'s own doc comment. Same
+    /// Switches which list the snapshot reflects (`snapshot?.currentList`)
+    /// and the one new captures land in — see
+    /// `todo_core::App::set_current_list`'s own doc comment. Same
     /// swallow-and-log error handling as `dispatch`: a failed local write
     /// isn't something call sites should need a `do`/`catch` for.
-    public func setCurrentList(_ list: ListFilter) {
-        do { try app.setCurrentList(list: list) }
+    public func setCurrentList(_ listId: String) {
+        do { try app.setCurrentList(listId: listId) }
         catch { print("setCurrentList failed: \(error)") }
     }
 

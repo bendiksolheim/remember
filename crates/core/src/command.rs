@@ -70,13 +70,3 @@ pub enum ViewFilter {
     Active,
     Completed,
 }
-
-/// Which list(s) `Doc::read` should include. Orthogonal to `ViewFilter`
-/// (done/active/all) — this axis is about which list(s), not which
-/// completion state.
-#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
-pub enum ListFilter {
-    #[default]
-    All,
-    List(String),
-}

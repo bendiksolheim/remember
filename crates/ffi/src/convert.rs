@@ -2,8 +2,8 @@
 //! Plain functions, no decisions — covered at 100%.
 
 use crate::{
-    AppError, Command, DueDetection, DueState, ListColor, ListFilter, ListRow, Session, Snapshot,
-    SyncError, SyncOutcome, TaskRow, View,
+    AppError, Command, DueDetection, DueState, ListColor, ListRow, Session, Snapshot, SyncError,
+    SyncOutcome, TaskRow, View,
 };
 
 pub fn command_to_core(command: Command) -> todo_core::Command {
@@ -48,20 +48,6 @@ pub fn view_from_core(view: todo_core::ViewFilter) -> View {
         todo_core::ViewFilter::All => View::All,
         todo_core::ViewFilter::Active => View::Active,
         todo_core::ViewFilter::Completed => View::Completed,
-    }
-}
-
-pub fn list_filter_to_core(filter: ListFilter) -> todo_core::ListFilter {
-    match filter {
-        ListFilter::All => todo_core::ListFilter::All,
-        ListFilter::List { id } => todo_core::ListFilter::List(id),
-    }
-}
-
-pub fn list_filter_from_core(filter: todo_core::ListFilter) -> ListFilter {
-    match filter {
-        todo_core::ListFilter::All => ListFilter::All,
-        todo_core::ListFilter::List(id) => ListFilter::List { id },
     }
 }
 
@@ -122,8 +108,7 @@ pub fn snapshot_from_core(snapshot: &todo_core::Snapshot) -> Snapshot {
     Snapshot {
         rows: snapshot.rows.iter().map(task_row_from_core).collect(),
         view: view_from_core(snapshot.view),
-        current_list: list_filter_from_core(snapshot.current_list.clone()),
-        capture_list_id: snapshot.capture_list_id.clone(),
+        current_list: snapshot.current_list.clone(),
         lists: snapshot.lists.iter().map(list_row_from_core).collect(),
         active_count: snapshot.active_count,
         can_undo: snapshot.can_undo,
@@ -311,34 +296,6 @@ mod tests {
     }
 
     #[test]
-    fn list_filter_round_trips_all() {
-        assert_eq!(
-            list_filter_to_core(ListFilter::All),
-            todo_core::ListFilter::All
-        );
-        assert_eq!(
-            list_filter_from_core(todo_core::ListFilter::All),
-            ListFilter::All
-        );
-    }
-
-    #[test]
-    fn list_filter_round_trips_list() {
-        assert_eq!(
-            list_filter_to_core(ListFilter::List {
-                id: "l".to_string()
-            }),
-            todo_core::ListFilter::List("l".to_string())
-        );
-        assert_eq!(
-            list_filter_from_core(todo_core::ListFilter::List("l".to_string())),
-            ListFilter::List {
-                id: "l".to_string()
-            }
-        );
-    }
-
-    #[test]
     fn list_row_converts_all_fields() {
         let row = list_row_from_core(&todo_core::ListRow {
             id: "l".to_string(),
@@ -475,8 +432,7 @@ mod tests {
                 todo_core::DueState::Today,
             )],
             view: todo_core::ViewFilter::Active,
-            current_list: todo_core::ListFilter::List("l".to_string()),
-            capture_list_id: "l".to_string(),
+            current_list: "l".to_string(),
             lists: vec![todo_core::ListRow {
                 id: "l".to_string(),
                 name: "List".to_string(),
@@ -491,13 +447,7 @@ mod tests {
         assert_eq!(snapshot.rows.len(), 1);
         assert_eq!(snapshot.rows[0].id, "id");
         assert!(matches!(snapshot.view, View::Active));
-        assert_eq!(
-            snapshot.current_list,
-            ListFilter::List {
-                id: "l".to_string()
-            }
-        );
-        assert_eq!(snapshot.capture_list_id, "l");
+        assert_eq!(snapshot.current_list, "l");
         assert_eq!(snapshot.lists.len(), 1);
         assert_eq!(snapshot.lists[0].id, "l");
         assert_eq!(snapshot.active_count, 3);
@@ -511,8 +461,7 @@ mod tests {
         let core_snapshot = todo_core::Snapshot {
             rows: vec![],
             view: todo_core::ViewFilter::All,
-            current_list: todo_core::ListFilter::All,
-            capture_list_id: "default".to_string(),
+            current_list: "default".to_string(),
             lists: vec![],
             active_count: 0,
             can_undo: false,
@@ -521,8 +470,7 @@ mod tests {
         };
         let snapshot = snapshot_from_core(&core_snapshot);
         assert!(snapshot.rows.is_empty());
-        assert_eq!(snapshot.current_list, ListFilter::All);
-        assert_eq!(snapshot.capture_list_id, "default");
+        assert_eq!(snapshot.current_list, "default");
         assert!(snapshot.lists.is_empty());
     }
 

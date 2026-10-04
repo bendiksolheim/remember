@@ -3,7 +3,7 @@ use std::thread;
 use std::time::Duration;
 
 use tempfile::TempDir;
-use todo_core::{App, Command, CoreError, ListFilter, Store, ViewFilter};
+use todo_core::{App, Command, CoreError, Store, ViewFilter};
 
 fn db_path(dir: &TempDir, name: &str) -> String {
     dir.path().join(name).to_str().unwrap().to_string()
@@ -269,11 +269,10 @@ fn subscribe_fires_immediately_then_on_every_dispatch() {
 }
 
 #[test]
-fn fresh_store_has_no_current_or_capture_list() {
+fn fresh_store_has_no_current_list() {
     let dir = TempDir::new().unwrap();
     let store = Store::open(&db_path(&dir, "todo.sqlite3")).unwrap();
     assert_eq!(store.load_current_list().unwrap(), None);
-    assert_eq!(store.load_capture_list().unwrap(), None);
 }
 
 #[test]
@@ -281,37 +280,12 @@ fn current_list_round_trips_and_can_be_overwritten() {
     let dir = TempDir::new().unwrap();
     let store = Store::open(&db_path(&dir, "todo.sqlite3")).unwrap();
 
-    store.save_current_list(Some("work")).unwrap();
+    store.save_current_list("work").unwrap();
     assert_eq!(store.load_current_list().unwrap(), Some("work".to_string()));
 
-    store.save_current_list(Some("personal")).unwrap();
+    store.save_current_list("personal").unwrap();
     assert_eq!(
         store.load_current_list().unwrap(),
-        Some("personal".to_string())
-    );
-}
-
-#[test]
-fn current_list_of_none_deletes_the_stored_value() {
-    let dir = TempDir::new().unwrap();
-    let store = Store::open(&db_path(&dir, "todo.sqlite3")).unwrap();
-
-    store.save_current_list(Some("work")).unwrap();
-    store.save_current_list(None).unwrap();
-    assert_eq!(store.load_current_list().unwrap(), None);
-}
-
-#[test]
-fn capture_list_round_trips_and_can_be_overwritten() {
-    let dir = TempDir::new().unwrap();
-    let store = Store::open(&db_path(&dir, "todo.sqlite3")).unwrap();
-
-    store.save_capture_list("work").unwrap();
-    assert_eq!(store.load_capture_list().unwrap(), Some("work".to_string()));
-
-    store.save_capture_list("personal").unwrap();
-    assert_eq!(
-        store.load_capture_list().unwrap(),
         Some("personal".to_string())
     );
 }
@@ -346,28 +320,10 @@ fn set_current_list_persists_across_reopen() {
     let path = db_path(&dir, "todo.sqlite3");
     {
         let app = App::open(&path).unwrap();
-        app.set_current_list(ListFilter::List("work".to_string()))
-            .unwrap();
+        app.set_current_list("work".to_string()).unwrap();
     }
     let app2 = App::open(&path).unwrap();
-    assert_eq!(
-        app2.current().current_list,
-        ListFilter::List("work".to_string())
-    );
-}
-
-#[test]
-fn set_current_list_to_all_is_also_persisted() {
-    let dir = TempDir::new().unwrap();
-    let path = db_path(&dir, "todo.sqlite3");
-    {
-        let app = App::open(&path).unwrap();
-        app.set_current_list(ListFilter::List("work".to_string()))
-            .unwrap();
-        app.set_current_list(ListFilter::All).unwrap();
-    }
-    let app2 = App::open(&path).unwrap();
-    assert_eq!(app2.current().current_list, ListFilter::All);
+    assert_eq!(app2.current().current_list, "work");
 }
 
 #[test]
@@ -375,68 +331,36 @@ fn set_current_list_notifies_existing_subscribers() {
     let dir = TempDir::new().unwrap();
     let app = App::open(&db_path(&dir, "todo.sqlite3")).unwrap();
 
-    let seen: Arc<Mutex<Vec<ListFilter>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let seen_clone = Arc::clone(&seen);
     app.subscribe(move |snap| seen_clone.lock().unwrap().push(snap.current_list.clone()));
 
-    app.set_current_list(ListFilter::List("work".to_string()))
-        .unwrap();
+    app.set_current_list("work".to_string()).unwrap();
     assert_eq!(
         *seen.lock().unwrap(),
-        vec![ListFilter::All, ListFilter::List("work".to_string())]
+        vec!["default".to_string(), "work".to_string()]
     );
 }
 
-/// A new task always needs one concrete destination list — switching the
-/// *view* to "All" must not leave captures with nowhere to land. See
-/// `capture_list_id`'s own doc comment on why it tracks the last concrete
-/// list independently of `current_list`.
 #[test]
-fn capture_sticks_to_the_last_concrete_list_even_while_viewing_all() {
+fn current_list_defaults_to_the_default_list_on_a_fresh_install() {
     let dir = TempDir::new().unwrap();
     let app = App::open(&db_path(&dir, "todo.sqlite3")).unwrap();
-
-    app.dispatch(Command::AddList {
-        name: "Work".to_string(),
-        after: None,
-    })
-    .unwrap();
-    let work = app.current().lists[0].id.clone();
-
-    app.set_current_list(ListFilter::List(work.clone()))
-        .unwrap();
-    app.set_current_list(ListFilter::All).unwrap();
-    assert_eq!(app.current().capture_list_id, work);
-
-    add(&app, "a");
-    let row = app
-        .current()
-        .rows
-        .iter()
-        .find(|r| r.title == "a")
-        .unwrap()
-        .clone();
-    assert_eq!(row.list_id, work);
-}
-
-#[test]
-fn capture_list_defaults_to_the_default_list_on_a_fresh_install() {
-    let dir = TempDir::new().unwrap();
-    let app = App::open(&db_path(&dir, "todo.sqlite3")).unwrap();
-    assert_eq!(app.current().capture_list_id, "default");
+    assert_eq!(app.current().current_list, "default");
     add(&app, "a");
     assert_eq!(app.current().rows[0].list_id, "default");
 }
 
-/// Deleting the list `capture_list_id` points to must not leave new
-/// captures with nowhere to land — it should fall back to another list
-/// still in the roster rather than erroring with `NotFound` on the next
-/// `Add`.
+/// Deleting the list `current_list` points to — whether it's the one new
+/// captures land in, the one being viewed, or (now that there's only one
+/// such pointer) both at once — must not leave the app with nowhere to
+/// read from or capture into. It should fall back to another list still
+/// in the roster rather than erroring with `NotFound` on the next `Add`.
 #[test]
-fn deleting_the_capture_list_falls_back_to_a_remaining_list() {
+fn deleting_the_current_list_falls_back_to_a_remaining_list() {
     let dir = TempDir::new().unwrap();
     let app = App::open(&db_path(&dir, "todo.sqlite3")).unwrap();
-    let default_id = app.current().capture_list_id;
+    let default_id = app.current().current_list;
 
     app.dispatch(Command::AddList {
         name: "Work".to_string(),
@@ -444,49 +368,24 @@ fn deleting_the_capture_list_falls_back_to_a_remaining_list() {
     })
     .unwrap();
     let work = app.current().lists[0].id.clone();
-    app.set_current_list(ListFilter::List(work.clone()))
-        .unwrap();
-    assert_eq!(app.current().capture_list_id, work);
+    app.set_current_list(work.clone()).unwrap();
+    assert_eq!(app.current().current_list, work);
 
     app.dispatch(Command::DeleteList { id: work }).unwrap();
 
-    let fallback = app.current().capture_list_id;
+    let fallback = app.current().current_list;
     assert_eq!(fallback, default_id);
     add(&app, "a");
     assert_eq!(app.current().rows[0].list_id, fallback);
 }
 
-/// Deleting the list `current_list` (the view filter) points to must not
-/// leave the view silently filtering on a list that no longer exists —
-/// it should fall back to a remaining list.
+/// Deleting a list that `current_list` doesn't point to must leave it
+/// exactly as it was.
 #[test]
-fn deleting_the_viewed_list_falls_back_to_a_remaining_list() {
+fn deleting_an_unrelated_list_leaves_current_list_untouched() {
     let dir = TempDir::new().unwrap();
     let app = App::open(&db_path(&dir, "todo.sqlite3")).unwrap();
-    let default_id = app.current().capture_list_id;
-
-    app.dispatch(Command::AddList {
-        name: "Work".to_string(),
-        after: None,
-    })
-    .unwrap();
-    let work = app.current().lists[0].id.clone();
-    app.set_current_list(ListFilter::List(work.clone()))
-        .unwrap();
-    assert_eq!(app.current().current_list, ListFilter::List(work.clone()));
-
-    app.dispatch(Command::DeleteList { id: work }).unwrap();
-
-    assert_eq!(app.current().current_list, ListFilter::List(default_id));
-}
-
-/// Deleting a list that neither `capture_list_id` nor `current_list`
-/// points to must leave both exactly as they were.
-#[test]
-fn deleting_an_unrelated_list_leaves_capture_and_current_list_untouched() {
-    let dir = TempDir::new().unwrap();
-    let app = App::open(&db_path(&dir, "todo.sqlite3")).unwrap();
-    let default_id = app.current().capture_list_id;
+    let default_id = app.current().current_list;
 
     app.dispatch(Command::AddList {
         name: "Work".to_string(),
@@ -497,38 +396,7 @@ fn deleting_an_unrelated_list_leaves_capture_and_current_list_untouched() {
 
     app.dispatch(Command::DeleteList { id: work }).unwrap();
 
-    assert_eq!(app.current().capture_list_id, default_id);
-    assert_eq!(app.current().current_list, ListFilter::All);
-}
-
-/// Mirrors `deleting_an_unrelated_list_leaves_capture_and_current_list_untouched`
-/// but from the other side: `capture_list_id` sticks to a list even while
-/// `current_list` has moved on to "All" (see
-/// `capture_sticks_to_the_last_concrete_list_even_while_viewing_all`), so
-/// deleting that list must repair `capture_list_id` alone, leaving the
-/// "All" view as-is.
-#[test]
-fn deleting_the_capture_list_repairs_it_independently_of_current_list_viewing_all() {
-    let dir = TempDir::new().unwrap();
-    let app = App::open(&db_path(&dir, "todo.sqlite3")).unwrap();
-    let default_id = app.current().capture_list_id;
-
-    app.dispatch(Command::AddList {
-        name: "Work".to_string(),
-        after: None,
-    })
-    .unwrap();
-    let work = app.current().lists[0].id.clone();
-    app.set_current_list(ListFilter::List(work.clone()))
-        .unwrap();
-    app.set_current_list(ListFilter::All).unwrap();
-    assert_eq!(app.current().capture_list_id, work);
-    assert_eq!(app.current().current_list, ListFilter::All);
-
-    app.dispatch(Command::DeleteList { id: work }).unwrap();
-
-    assert_eq!(app.current().capture_list_id, default_id);
-    assert_eq!(app.current().current_list, ListFilter::All);
+    assert_eq!(app.current().current_list, default_id);
 }
 
 /// `App::dispatch` must surface a failing command's error rather than
@@ -544,58 +412,4 @@ fn dispatch_surfaces_the_underlying_apply_error() {
         })
         .unwrap_err();
     assert_eq!(err, CoreError::NotFound("no-such-list".to_string()));
-}
-
-/// `capture_list_id` and `current_list` are normally kept in lock-step by
-/// `set_current_list`, but a crash between the two underlying `Store`
-/// writes (or data from before they were always updated together) can
-/// leave them pointing at different lists. Deleting the list
-/// `current_list` alone points to must still repair just that one,
-/// leaving an unrelated `capture_list_id` alone.
-#[test]
-fn deleting_the_viewed_list_repairs_it_independently_of_a_differing_capture_list() {
-    let dir = TempDir::new().unwrap();
-    let path = db_path(&dir, "todo.sqlite3");
-    let (work_id, personal_id) = {
-        let app = App::open(&path).unwrap();
-        app.dispatch(Command::AddList {
-            name: "Work".to_string(),
-            after: None,
-        })
-        .unwrap();
-        app.dispatch(Command::AddList {
-            name: "Personal".to_string(),
-            after: None,
-        })
-        .unwrap();
-        let lists = app.current().lists;
-        let work = lists.iter().find(|l| l.name == "Work").unwrap().id.clone();
-        let personal = lists
-            .iter()
-            .find(|l| l.name == "Personal")
-            .unwrap()
-            .id
-            .clone();
-        (work, personal)
-    };
-
-    let store = Store::open(&path).unwrap();
-    store.save_current_list(Some(&work_id)).unwrap();
-    store.save_capture_list(&personal_id).unwrap();
-    drop(store);
-
-    let app = App::open(&path).unwrap();
-    assert_eq!(
-        app.current().current_list,
-        ListFilter::List(work_id.clone())
-    );
-    assert_eq!(app.current().capture_list_id, personal_id);
-
-    app.dispatch(Command::DeleteList { id: work_id }).unwrap();
-
-    assert_eq!(
-        app.current().current_list,
-        ListFilter::List(personal_id.clone())
-    );
-    assert_eq!(app.current().capture_list_id, personal_id);
 }

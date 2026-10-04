@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use proptest::prelude::*;
-use todo_core::{Command, Doc, FixedClock, IdSource, ListFilter, Snapshot, TaskRow, ViewFilter};
+use todo_core::{Command, Doc, FixedClock, IdSource, Snapshot, TaskRow, ViewFilter};
 
 /// Deterministic, per-peer-unique id source. `SeqIdSource` alone would let
 /// two independently-generated peer sequences collide on the same ids
@@ -129,7 +129,7 @@ fn replay_one(
                 ids_src,
             )
             .unwrap();
-            let snap = doc.read(ViewFilter::All, ListFilter::All, clock);
+            let snap = doc.read(ViewFilter::All, "default", clock);
             // An empty/whitespace-only title is a no-op (see apply_add), so
             // there may be no new row to find here.
             if let Some(new_id) = snap
@@ -273,8 +273,8 @@ proptest! {
         merged_via_b.import_updates(&updates_a).unwrap();
 
         prop_assert_eq!(
-            content(&merged_via_a.read(ViewFilter::All, ListFilter::All, &clock)),
-            content(&merged_via_b.read(ViewFilter::All, ListFilter::All, &clock))
+            content(&merged_via_a.read(ViewFilter::All, "default", &clock)),
+            content(&merged_via_b.read(ViewFilter::All, "default", &clock))
         );
     }
 
@@ -289,9 +289,9 @@ proptest! {
 
         let mut target = Doc::new(2).unwrap();
         target.import_updates(&updates).unwrap();
-        let once = content(&target.read(ViewFilter::All, ListFilter::All, &clock));
+        let once = content(&target.read(ViewFilter::All, "default", &clock));
         target.import_updates(&updates).unwrap();
-        let twice = content(&target.read(ViewFilter::All, ListFilter::All, &clock));
+        let twice = content(&target.read(ViewFilter::All, "default", &clock));
         prop_assert_eq!(once, twice);
     }
 
@@ -318,8 +318,8 @@ proptest! {
         order2.import_updates(&updates_a).unwrap();
 
         prop_assert_eq!(
-            content(&order1.read(ViewFilter::All, ListFilter::All, &clock)),
-            content(&order2.read(ViewFilter::All, ListFilter::All, &clock))
+            content(&order1.read(ViewFilter::All, "default", &clock)),
+            content(&order2.read(ViewFilter::All, "default", &clock))
         );
     }
 
@@ -330,10 +330,10 @@ proptest! {
         let ids_src = PrefixedIds::new("a");
         let mut doc = Doc::new(1).unwrap();
         replay(&ops, &mut doc, &clock, &ids_src);
-        let before = content(&doc.read(ViewFilter::All, ListFilter::All, &clock));
+        let before = content(&doc.read(ViewFilter::All, "default", &clock));
         let bytes = doc.export_snapshot().unwrap();
         let reloaded = Doc::load(1, &bytes).unwrap();
-        let after = content(&reloaded.read(ViewFilter::All, ListFilter::All, &clock));
+        let after = content(&reloaded.read(ViewFilter::All, "default", &clock));
         prop_assert_eq!(before, after);
     }
 
@@ -356,7 +356,7 @@ proptest! {
         let ids_src = PrefixedIds::new("a");
         let mut doc = Doc::new(1).unwrap();
         replay(&ops, &mut doc, &clock, &ids_src);
-        let snap = doc.read(ViewFilter::All, ListFilter::All, &clock);
+        let snap = doc.read(ViewFilter::All, "default", &clock);
         let expected = snap.rows.iter().filter(|r| !r.done).count() as u32;
         prop_assert_eq!(snap.active_count, expected);
     }
@@ -372,9 +372,9 @@ proptest! {
         let mut doc = Doc::new(1).unwrap();
         let mut known = replay(&ops, &mut doc, &clock, &ids_src);
 
-        let before = content(&doc.read(ViewFilter::All, ListFilter::All, &clock));
+        let before = content(&doc.read(ViewFilter::All, "default", &clock));
         let applied = replay_one(&last, &mut doc, &clock, &ids_src, &mut known);
-        let changed = applied && content(&doc.read(ViewFilter::All, ListFilter::All, &clock)) != before;
+        let changed = applied && content(&doc.read(ViewFilter::All, "default", &clock)) != before;
         // A command that sets a field to its current value (or moves an
         // item to where it already is) is a genuine no-op: Loro's LWW
         // registers dedupe same-value writes, so nothing is pushed onto the
@@ -382,7 +382,7 @@ proptest! {
         // real change instead — there's nothing of `last`'s own to invert.
         if changed {
             doc.apply(Command::Undo, &clock, &ids_src).unwrap();
-            let after = content(&doc.read(ViewFilter::All, ListFilter::All, &clock));
+            let after = content(&doc.read(ViewFilter::All, "default", &clock));
             prop_assert_eq!(before, after);
         }
     }

@@ -137,30 +137,16 @@ impl Store {
         Ok(())
     }
 
-    /// The sidebar/"current" list selected on *this device* — not synced,
-    /// since different devices may legitimately be looking at different
-    /// lists at the same time. `None` means "never set" (fresh install) or
-    /// explicitly "All lists".
+    /// The list selected on *this device* — both what's displayed and where
+    /// new captures land. Not synced, since different devices may
+    /// legitimately be looking at different lists at the same time. `None`
+    /// means "never set" (fresh install).
     pub fn load_current_list(&self) -> Result<Option<String>, CoreError> {
         self.load_meta_string("current_list")
     }
 
-    pub fn save_current_list(&self, list_id: Option<&str>) -> Result<(), CoreError> {
-        self.save_meta_string("current_list", list_id)
-    }
-
-    /// The last *concrete* list a capture landed in on this device —
-    /// distinct from [`Store::load_current_list`], which can be "All": a
-    /// new task always needs one real destination list, even while the
-    /// current view is showing every list combined, so this tracks
-    /// whichever concrete list was selected most recently regardless of
-    /// whether the view has since moved to "All". `None` means never set.
-    pub fn load_capture_list(&self) -> Result<Option<String>, CoreError> {
-        self.load_meta_string("capture_list")
-    }
-
-    pub fn save_capture_list(&self, list_id: &str) -> Result<(), CoreError> {
-        self.save_meta_string("capture_list", Some(list_id))
+    pub fn save_current_list(&self, list_id: &str) -> Result<(), CoreError> {
+        self.save_meta_string("current_list", Some(list_id))
     }
 
     fn load_meta_string(&self, key: &str) -> Result<Option<String>, CoreError> {

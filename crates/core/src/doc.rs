@@ -36,10 +36,9 @@ use std::cmp::Ordering;
 use loro::{ExportMode, LoroDoc, LoroMap, LoroMovableList, LoroValue, UndoManager, VersionVector};
 
 use crate::clock::{Clock, IdSource};
-use crate::command::{Command, ListFilter, ViewFilter};
+use crate::command::{Command, ViewFilter};
 use crate::snapshot::{
-    due_label, due_state, matches_filter, matches_list_filter, DueState, ListColor, ListRow,
-    Snapshot, TaskRow,
+    due_label, due_state, matches_filter, DueState, ListColor, ListRow, Snapshot, TaskRow,
 };
 use crate::CoreError;
 
@@ -421,7 +420,7 @@ impl Doc {
         }
     }
 
-    pub fn read(&self, view: ViewFilter, list: ListFilter, clock: &dyn Clock) -> Snapshot {
+    pub fn read(&self, view: ViewFilter, list: &str, clock: &dyn Clock) -> Snapshot {
         let now = clock.now();
         let tasks = self.doc.get_map("tasks");
         let order = self.doc.get_movable_list("order");
@@ -472,7 +471,7 @@ impl Doc {
             if !done {
                 active_count += 1;
             }
-            if !matches_filter(done, view) || !matches_list_filter(&list_id, &list) {
+            if !matches_filter(done, view) || list_id != list {
                 continue;
             }
 
@@ -499,10 +498,7 @@ impl Doc {
         Snapshot {
             rows,
             view,
-            current_list: list,
-            // Not this layer's to know — see the field's own doc comment.
-            // `App::current()` fills in the real value.
-            capture_list_id: String::new(),
+            current_list: list.to_string(),
             lists: list_rows,
             active_count,
             can_undo: self.undo.can_undo(),
@@ -860,7 +856,7 @@ mod tests {
         let snapshot = pre_lists_doc.export(ExportMode::snapshot()).unwrap();
 
         let doc = Doc::load(2, &snapshot).unwrap();
-        let snap = doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0));
+        let snap = doc.read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0));
         assert_eq!(snap.lists.len(), 1);
         assert_eq!(snap.lists[0].id, DEFAULT_LIST_ID);
         assert_eq!(snap.rows[0].list_id, DEFAULT_LIST_ID);
@@ -880,7 +876,7 @@ mod tests {
             .unwrap();
         doc.doc.commit();
 
-        let snap = doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0));
+        let snap = doc.read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0));
         assert_eq!(snap.lists.len(), 1);
     }
 
@@ -942,12 +938,12 @@ mod tests {
         )
         .unwrap();
         let work = doc
-            .read(ViewFilter::All, ListFilter::All, &FixedClock(0))
+            .read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0))
             .lists[0]
             .id
             .clone();
         let a = doc
-            .read(ViewFilter::All, ListFilter::All, &FixedClock(0))
+            .read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0))
             .rows[0]
             .id
             .clone();
@@ -964,7 +960,7 @@ mod tests {
         )
         .unwrap();
 
-        let snap = doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0));
+        let snap = doc.read(ViewFilter::All, &work, &FixedClock(0));
         assert_eq!(snap.rows[0].id, a);
         assert_eq!(snap.rows[0].list_id, work);
     }
@@ -987,7 +983,7 @@ mod tests {
             .unwrap();
         }
 
-        let snap = doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0));
+        let snap = doc.read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0));
         assert_eq!(snap.lists.len(), 9);
         let colors: std::collections::HashSet<ListColor> =
             snap.lists.iter().map(|l| l.color).collect();
@@ -1010,7 +1006,7 @@ mod tests {
             .unwrap();
         }
 
-        let snap = doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0));
+        let snap = doc.read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0));
         assert_eq!(snap.lists.len(), 10);
         // The 10th list (index 9 in creation order, right after the
         // bootstrap default list) has nowhere new to go — same color as the
@@ -1033,7 +1029,7 @@ mod tests {
         .unwrap();
         // `after: None` inserts at the top (see `insert_position`), so
         // "Work" is lists[0] and the bootstrap default list is lists[1].
-        let before = doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0));
+        let before = doc.read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0));
         let work_id = before.lists[0].id.clone();
         let work_color = before.lists[0].color;
 
@@ -1049,7 +1045,7 @@ mod tests {
         )
         .unwrap();
 
-        let snap = doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0));
+        let snap = doc.read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0));
         assert_eq!(snap.lists.len(), 2);
         assert_eq!(snap.lists[0].color, work_color);
     }
@@ -1078,7 +1074,7 @@ mod tests {
 
         let snapshot = doc.export_snapshot().unwrap();
         let reloaded = Doc::load(2, &snapshot).unwrap();
-        let snap = reloaded.read(ViewFilter::All, ListFilter::All, &FixedClock(0));
+        let snap = reloaded.read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0));
 
         assert_eq!(snap.lists.len(), 1);
         assert_eq!(snap.lists[0].name, "Work");
@@ -1106,7 +1102,7 @@ mod tests {
         let snapshot = pre_colors_doc.export(ExportMode::snapshot()).unwrap();
 
         let doc = Doc::load(2, &snapshot).unwrap();
-        let snap = doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0));
+        let snap = doc.read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0));
         assert_eq!(snap.lists.len(), 2);
         assert_ne!(snap.lists[0].color, snap.lists[1].color);
     }
@@ -1153,7 +1149,7 @@ mod tests {
             .insert(0, "ghost")
             .unwrap();
         doc.doc.commit();
-        let snap = doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0));
+        let snap = doc.read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0));
         assert!(snap.rows.is_empty());
     }
 
@@ -1164,7 +1160,7 @@ mod tests {
         doc.doc.get_map("tasks").insert("x", 123).unwrap();
         doc.doc.get_movable_list("order").insert(0, "x").unwrap();
         doc.doc.commit();
-        let snap = doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0));
+        let snap = doc.read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0));
         assert!(snap.rows.is_empty());
     }
 
@@ -1175,7 +1171,7 @@ mod tests {
         task.insert("title", 42).unwrap(); // wrong type: I64, not String
         doc.doc.get_movable_list("order").insert(0, "x").unwrap();
         doc.doc.commit();
-        let snap = doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0));
+        let snap = doc.read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0));
         assert!(snap.rows.is_empty());
     }
 
@@ -1187,7 +1183,7 @@ mod tests {
         task.insert("done", "not a bool").unwrap(); // wrong type: String, not Bool
         doc.doc.get_movable_list("order").insert(0, "x").unwrap();
         doc.doc.commit();
-        let snap = doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0));
+        let snap = doc.read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0));
         assert_eq!(snap.rows.len(), 1);
         assert!(!snap.rows[0].done);
     }
@@ -1351,7 +1347,7 @@ mod tests {
         )
         .unwrap();
         let row = &doc
-            .read(ViewFilter::All, ListFilter::All, &FixedClock(0))
+            .read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0))
             .rows[0];
         assert_eq!(row.due, Some(1_000));
     }
@@ -1371,7 +1367,7 @@ mod tests {
         )
         .unwrap();
         let row = &doc
-            .read(ViewFilter::All, ListFilter::All, &FixedClock(0))
+            .read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0))
             .rows[0];
         assert_eq!(row.due, None);
     }
@@ -1402,7 +1398,7 @@ mod tests {
             &ids,
         )
         .unwrap();
-        let before = doc.read(ViewFilter::All, ListFilter::All, &clock);
+        let before = doc.read(ViewFilter::All, DEFAULT_LIST_ID, &clock);
         assert_eq!(before.rows[0].due_state, DueState::Today);
 
         // UTC+12: "now" (13:00 UTC) is already 1970-01-02 01:00 local — a
@@ -1411,7 +1407,7 @@ mod tests {
         // `revision` bump, since this is display config, not content.
         let revision_before = before.revision;
         doc.set_local_offset_seconds(12 * 3_600);
-        let after = doc.read(ViewFilter::All, ListFilter::All, &clock);
+        let after = doc.read(ViewFilter::All, DEFAULT_LIST_ID, &clock);
         assert_eq!(after.rows[0].due_state, DueState::Overdue);
         assert_eq!(after.revision, revision_before);
     }

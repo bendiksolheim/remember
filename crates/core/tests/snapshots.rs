@@ -1,5 +1,5 @@
 use todo_core::snapshot::due_label;
-use todo_core::{Command, Doc, FixedClock, ListFilter, SeqIdSource, ViewFilter};
+use todo_core::{Command, Doc, FixedClock, SeqIdSource, ViewFilter};
 
 const DAY: i64 = 86_400;
 
@@ -36,7 +36,7 @@ fn fixture() -> Doc {
         &ids,
     )
     .unwrap();
-    let write_report = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0]
+    let write_report = doc.read(ViewFilter::All, "default", &clock).rows[0]
         .id
         .clone();
     doc.apply(
@@ -60,7 +60,7 @@ fn fixture() -> Doc {
         &ids,
     )
     .unwrap();
-    let call_dentist = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0]
+    let call_dentist = doc.read(ViewFilter::All, "default", &clock).rows[0]
         .id
         .clone();
     doc.apply(
@@ -84,7 +84,7 @@ fn fixture() -> Doc {
         &ids,
     )
     .unwrap();
-    let pay_rent = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0]
+    let pay_rent = doc.read(ViewFilter::All, "default", &clock).rows[0]
         .id
         .clone();
     doc.apply(
@@ -108,7 +108,7 @@ fn fixture() -> Doc {
         &ids,
     )
     .unwrap();
-    let clean_garage = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0]
+    let clean_garage = doc.read(ViewFilter::All, "default", &clock).rows[0]
         .id
         .clone();
     doc.apply(
@@ -132,7 +132,7 @@ fn fixture() -> Doc {
         &ids,
     )
     .unwrap();
-    let submit_taxes = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0]
+    let submit_taxes = doc.read(ViewFilter::All, "default", &clock).rows[0]
         .id
         .clone();
     doc.apply(
@@ -161,21 +161,21 @@ fn fixture() -> Doc {
 fn snapshot_all_view() {
     let doc = fixture();
     let clock = FixedClock(NOW);
-    insta::assert_yaml_snapshot!(doc.read(ViewFilter::All, ListFilter::All, &clock));
+    insta::assert_yaml_snapshot!(doc.read(ViewFilter::All, "default", &clock));
 }
 
 #[test]
 fn snapshot_active_view() {
     let doc = fixture();
     let clock = FixedClock(NOW);
-    insta::assert_yaml_snapshot!(doc.read(ViewFilter::Active, ListFilter::All, &clock));
+    insta::assert_yaml_snapshot!(doc.read(ViewFilter::Active, "default", &clock));
 }
 
 #[test]
 fn snapshot_completed_view() {
     let doc = fixture();
     let clock = FixedClock(NOW);
-    insta::assert_yaml_snapshot!(doc.read(ViewFilter::Completed, ListFilter::All, &clock));
+    insta::assert_yaml_snapshot!(doc.read(ViewFilter::Completed, "default", &clock));
 }
 
 #[test]
