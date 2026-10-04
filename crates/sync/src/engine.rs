@@ -11,6 +11,21 @@ use crate::auth::{AuthClient, Session};
 use crate::transport::SyncTransport;
 use crate::SyncError;
 
+/// Aborts a round whose account was swapped out from under it -- a sync
+/// for a since-signed-out account still in flight when another account's
+/// first round reset local state. Carrying on would import the old
+/// account's pulled data into the new one's document, or push the new one's
+/// data to the old account.
+fn ensure_still_bound(app: &App, session: &Session) -> Result<(), SyncError> {
+    if app.sync_account()?.as_deref() == Some(session.user_id.as_str()) {
+        Ok(())
+    } else {
+        Err(SyncError::Auth(
+            "account changed during sync; round abandoned".to_string(),
+        ))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SyncOutcome {
     pub pulled: usize,
@@ -52,19 +67,27 @@ impl SyncEngine {
             Ok(fresh) => fresh,
             Err(err) => return (session, Err(err)),
         };
-        let result = self.run(app, &session.access_token);
+        let result = self.run(app, &session);
         (session, result)
     }
 
-    fn run(&self, app: &App, token: &str) -> Result<SyncOutcome, SyncError> {
+    fn run(&self, app: &App, session: &Session) -> Result<SyncOutcome, SyncError> {
+        let token = session.access_token.as_str();
+        // Resets local state first if a different account synced here
+        // before -- see `App::bind_sync_account`.
+        app.bind_sync_account(&session.user_id)?;
+
         let mut pulled = 0;
         let since = app.last_pulled_seq()?;
-        for update in self.transport.pull(token, since)? {
+        let updates = self.transport.pull(token, since)?;
+        for update in updates {
+            ensure_still_bound(app, session)?;
             app.import_from_pull(&update.payload)?;
             app.mark_pulled(update.seq)?;
             pulled += 1;
         }
 
+        ensure_still_bound(app, session)?;
         let pushed_bytes = if app.has_unpushed_changes()? {
             let bytes = app.export_for_push()?;
             self.transport.push(token, app.peer_id(), bytes.clone())?;
@@ -431,5 +454,124 @@ mod tests {
         assert!(matches!(result, Err(SyncError::Transport(_))));
         assert_eq!(session.access_token, "refreshed-access");
         assert_eq!(session.refresh_token, "refreshed-refresh");
+    }
+
+    fn session_for(user_id: &str) -> Session {
+        Session {
+            user_id: user_id.to_string(),
+            ..fresh_session("tok")
+        }
+    }
+
+    fn titles(app: &App) -> Vec<String> {
+        app.current().rows.into_iter().map(|r| r.title).collect()
+    }
+
+    #[test]
+    fn switching_accounts_never_carries_one_accounts_todos_into_the_other() {
+        let dir = TempDir::new().unwrap();
+        let a_server = Arc::new(InMemoryTransport::new());
+        let b_server = Arc::new(InMemoryTransport::new());
+        let as_a = SyncEngine::new(a_server as Arc<dyn SyncTransport>, unused_auth());
+        let as_b = SyncEngine::new(b_server.clone() as Arc<dyn SyncTransport>, unused_auth());
+
+        // B already has a task, from another device.
+        let b_elsewhere = open(&dir, "b-elsewhere.sqlite3");
+        add(&b_elsewhere, "b's task");
+        b_server
+            .push(
+                "tok",
+                b_elsewhere.peer_id(),
+                b_elsewhere.export_for_push().unwrap(),
+            )
+            .unwrap();
+
+        // A uses this Mac first. Two rounds, so A's own push is pulled back
+        // and A's cursor sits on the same seq as B's existing row -- the
+        // row a stale cursor would wrongly skip.
+        let app = open(&dir, "shared-mac.sqlite3");
+        add(&app, "a's task");
+        as_a.sync_once(&app, session_for("a")).1.unwrap();
+        as_a.sync_once(&app, session_for("a")).1.unwrap();
+        assert_eq!(app.last_pulled_seq().unwrap(), Some(0));
+
+        // A signs out, B signs in on the same Mac.
+        as_b.sync_once(&app, session_for("b")).1.unwrap();
+        assert_eq!(titles(&app), vec!["b's task".to_string()]);
+
+        // ...and nothing of A's reached B's server.
+        let fresh_b_device = open(&dir, "fresh-b.sqlite3");
+        for update in b_server.pull("tok", None).unwrap() {
+            fresh_b_device.import_from_pull(&update.payload).unwrap();
+        }
+        assert!(!titles(&fresh_b_device).contains(&"a's task".to_string()));
+    }
+
+    /// Stands in for another round (for a different account) resetting
+    /// local state while this one's pull is still on the wire.
+    struct AccountSwitchingTransport {
+        app: Arc<App>,
+        inner: InMemoryTransport,
+    }
+
+    impl SyncTransport for AccountSwitchingTransport {
+        fn push(&self, token: &str, device_id: u64, payload: Vec<u8>) -> Result<(), SyncError> {
+            self.inner.push(token, device_id, payload)
+        }
+
+        fn pull(
+            &self,
+            token: &str,
+            since_seq: Option<i64>,
+        ) -> Result<Vec<crate::PulledUpdate>, SyncError> {
+            let rows = self.inner.pull(token, since_seq)?;
+            self.app.bind_sync_account("someone-else").unwrap();
+            Ok(rows)
+        }
+    }
+
+    #[test]
+    fn a_round_whose_account_changes_mid_flight_is_abandoned() {
+        let dir = TempDir::new().unwrap();
+        let elsewhere = open(&dir, "elsewhere.sqlite3");
+        add(&elsewhere, "old account's task");
+        let app = Arc::new(open(&dir, "a.sqlite3"));
+        let transport = AccountSwitchingTransport {
+            app: Arc::clone(&app),
+            inner: InMemoryTransport::new(),
+        };
+        transport
+            .inner
+            .push(
+                "tok",
+                elsewhere.peer_id(),
+                elsewhere.export_for_push().unwrap(),
+            )
+            .unwrap();
+        let engine = SyncEngine::new(Arc::new(transport), unused_auth());
+
+        let (_, result) = engine.sync_once(&app, session_for("a"));
+
+        assert!(matches!(result, Err(SyncError::Auth(_))));
+        assert!(titles(&app).is_empty());
+        assert_eq!(app.last_pulled_seq().unwrap(), None);
+    }
+
+    #[test]
+    fn a_round_whose_account_changes_before_the_push_pushes_nothing() {
+        let dir = TempDir::new().unwrap();
+        let app = Arc::new(open(&dir, "a.sqlite3"));
+        let transport = Arc::new(AccountSwitchingTransport {
+            app: Arc::clone(&app),
+            inner: InMemoryTransport::new(),
+        });
+        let engine = SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>, unused_auth());
+
+        // Empty log, so the loop never runs -- the check before the push
+        // is the one that has to catch it.
+        let (_, result) = engine.sync_once(&app, session_for("a"));
+
+        assert!(matches!(result, Err(SyncError::Auth(_))));
+        assert!(transport.inner.pull("tok", None).unwrap().is_empty());
     }
 }

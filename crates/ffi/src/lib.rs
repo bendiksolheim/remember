@@ -340,9 +340,24 @@ impl SyncClient {
         let core_app = Arc::clone(&app.inner);
         let original = convert::session_to_sync(session);
         let original_for_comparison = original.clone();
+        // Taken now, not inside the callback: `auto_sync` is only ever set
+        // once, by `start_auto_sync`, so this can't go stale.
+        let auto_sync = self
+            .auto_sync
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         self.engine
             .sync_now(core_app, original, move |session, result| {
-                if session != original_for_comparison {
+                // A rotated session is only reported if the coordinator
+                // adopts it too -- if the user signed out (or in as someone
+                // else) mid-sync, persisting it would undo that. See
+                // `AutoSyncCoordinator::adopt_refreshed`.
+                if session != original_for_comparison
+                    && auto_sync.as_ref().is_none_or(|c| {
+                        c.adopt_refreshed(&original_for_comparison, session.clone())
+                    })
+                {
                     listener.on_session_refreshed(convert::session_from_sync(session));
                 }
                 match result {

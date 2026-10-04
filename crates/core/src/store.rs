@@ -29,6 +29,12 @@ fn store_err<E: std::fmt::Display>(e: E) -> CoreError {
     CoreError::Storage(e.to_string())
 }
 
+/// Derived from a fresh random UUID rather than adding a `rand` dependency
+/// solely for one random u64.
+pub(crate) fn fresh_peer_id() -> u64 {
+    Uuid::new_v4().as_u64_pair().0
+}
+
 pub struct Store {
     conn: Mutex<Connection>,
 }
@@ -66,9 +72,7 @@ impl Store {
             return Ok(u64::from_le_bytes(arr));
         }
 
-        // Derived from a fresh random UUID rather than adding a `rand`
-        // dependency solely for one random u64.
-        let id = Uuid::new_v4().as_u64_pair().0;
+        let id = fresh_peer_id();
         conn.execute(
             "INSERT INTO meta (key, value) VALUES ('peer_id', ?1)",
             (id.to_le_bytes().to_vec(),),
@@ -147,6 +151,50 @@ impl Store {
 
     pub fn save_current_list(&self, list_id: &str) -> Result<(), CoreError> {
         self.save_meta_string("current_list", Some(list_id))
+    }
+
+    /// The sync account (user id) this install's local data and sync
+    /// cursors belong to. `None` means no account has ever synced here.
+    pub fn load_sync_account(&self) -> Result<Option<String>, CoreError> {
+        self.load_meta_string("sync_account")
+    }
+
+    pub fn save_sync_account(&self, account: &str) -> Result<(), CoreError> {
+        self.save_meta_string("sync_account", Some(account))
+    }
+
+    /// Hands this install over to a different sync account, atomically:
+    /// replaces the document with `snapshot` (a fresh, empty one) under a
+    /// new `peer_id`, forgets both sync cursors and the current list, and
+    /// records `account` as the owner. All-or-nothing, so a crash midway
+    /// can never leave one account's data bound to another.
+    pub fn reset_for_account(
+        &self,
+        account: &str,
+        peer_id: u64,
+        snapshot: &[u8],
+        updated_at: i64,
+    ) -> Result<(), CoreError> {
+        let mut conn = self.lock();
+        let tx = conn.transaction().map_err(store_err)?;
+        tx.execute(
+            "DELETE FROM meta WHERE key IN ('pushed_vv', 'pulled_seq', 'current_list')",
+            [],
+        )
+        .map_err(store_err)?;
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('peer_id', ?1), ('sync_account', ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (peer_id.to_le_bytes().to_vec(), account.as_bytes()),
+        )
+        .map_err(store_err)?;
+        tx.execute(
+            "INSERT INTO doc (id, snapshot, updated_at) VALUES (1, ?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET snapshot = excluded.snapshot, updated_at = excluded.updated_at",
+            (snapshot, updated_at),
+        )
+        .map_err(store_err)?;
+        tx.commit().map_err(store_err)
     }
 
     fn load_meta_string(&self, key: &str) -> Result<Option<String>, CoreError> {

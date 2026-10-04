@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -59,12 +59,19 @@ struct Shared {
     dirty_since: Mutex<Option<Instant>>,
     shutdown: AtomicBool,
     listeners: Mutex<Vec<Listener>>,
-    peer_id: u64,
+    // Atomic, not a plain `u64`: `bind_sync_account` replaces it when a
+    // different account takes over this install.
+    peer_id: AtomicU64,
 }
 
 impl Shared {
     fn flush_now(&self) -> Result<(), CoreError> {
-        let bytes = lock(&self.state).doc.export_snapshot()?;
+        // The state lock is held across the save, not just the export:
+        // otherwise a `bind_sync_account` reset could land in between, and
+        // this would write the previous account's document over the fresh
+        // one the reset just stored.
+        let state = lock(&self.state);
+        let bytes = state.doc.export_snapshot()?;
         self.store.save_snapshot(&bytes, self.clock.now())
     }
 }
@@ -100,7 +107,7 @@ impl App {
             dirty_since: Mutex::new(None),
             shutdown: AtomicBool::new(false),
             listeners: Mutex::new(Vec::new()),
-            peer_id,
+            peer_id: AtomicU64::new(peer_id),
         });
 
         let writer_shared = Arc::clone(&shared);
@@ -274,11 +281,69 @@ impl App {
         Ok(())
     }
 
-    /// Stable for the life of this install — see [`Store::peer_id`].
-    /// Exposed so a sync layer can tag pushed rows with their origin
-    /// device.
+    /// Stable for the life of this install — see [`Store::peer_id`] —
+    /// until a different sync account takes it over (see
+    /// [`App::bind_sync_account`]). Exposed so a sync layer can tag pushed
+    /// rows with their origin device.
     pub fn peer_id(&self) -> u64 {
-        self.shared.peer_id
+        self.shared.peer_id.load(Ordering::SeqCst)
+    }
+
+    /// Ties this install's local data and sync cursors to `user_id`. A sync
+    /// layer must call this before every sync round, with the account it is
+    /// about to sync as:
+    ///
+    /// - No account bound yet (first sign-in): binds `user_id` and keeps
+    ///   everything, so todos made before ever signing in get uploaded.
+    /// - Same account: a no-op.
+    /// - A different account: resets local state — empty document, both
+    ///   sync cursors and the current list forgotten — so one account's
+    ///   todos never leak into, or get uploaded to, another's. The previous
+    ///   account's synced data stays on the server; its unpushed edits on
+    ///   this device are lost. Also picks a fresh peer id: the new account
+    ///   may already hold ops this device made under its old peer id (it
+    ///   synced here before), and a fresh document reusing that id would
+    ///   mint conflicting op ids.
+    ///
+    /// Returns whether a reset happened.
+    pub fn bind_sync_account(&self, user_id: &str) -> Result<bool, CoreError> {
+        // Held throughout, so no edit, export or flush can interleave with
+        // the swap (see `Shared::flush_now`, which holds it too).
+        let mut state = lock(&self.shared.state);
+        match self.shared.store.load_sync_account()? {
+            Some(bound) if bound == user_id => return Ok(false),
+            None => {
+                self.shared.store.save_sync_account(user_id)?;
+                return Ok(false);
+            }
+            Some(_) => {}
+        }
+
+        let peer_id = store::fresh_peer_id();
+        let mut doc = Doc::new(peer_id)?;
+        doc.set_local_offset_seconds(state.doc.local_offset_seconds());
+        self.shared.store.reset_for_account(
+            user_id,
+            peer_id,
+            &doc.export_snapshot()?,
+            self.shared.clock.now(),
+        )?;
+        state.doc = doc;
+        state.current_list = doc::DEFAULT_LIST_ID.to_string();
+        self.shared.peer_id.store(peer_id, Ordering::SeqCst);
+        drop(state);
+
+        // Already on disk, so nothing pending for the writer thread.
+        *lock(&self.shared.dirty_since) = None;
+        self.notify();
+        Ok(true)
+    }
+
+    /// The account [`App::bind_sync_account`] last bound, `None` if none
+    /// ever was. Lets a sync round confirm it is still syncing the account
+    /// it started with before touching local state.
+    pub fn sync_account(&self) -> Result<Option<String>, CoreError> {
+        self.shared.store.load_sync_account()
     }
 
     /// Whether there's anything worth pushing. A sync layer should check

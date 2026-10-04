@@ -87,17 +87,17 @@ impl State {
         self.force.store(false, Ordering::SeqCst);
         *lock(&self.dirty_since) = None;
         *lock(&self.last_attempt) = Some(Instant::now());
-        let Some(session) = lock(&self.session).clone() else {
+        let Some(original) = lock(&self.session).clone() else {
             return;
         };
-        let (session, result) = self.engine.sync_once(&self.app, session);
-        // Persisted (and reported) unconditionally, before the sync result
-        // below -- Supabase invalidates the old refresh token the instant a
-        // new one is issued, so a rotated session must reach the listener
-        // even if `result` then turns out to be an error, or the caller is
-        // left holding a refresh token that no longer works.
-        if lock(&self.session).as_ref() != Some(&session) {
-            *lock(&self.session) = Some(session.clone());
+        let (session, result) = self.engine.sync_once(&self.app, original.clone());
+        // Reported before the sync result below -- Supabase invalidates the
+        // old refresh token the instant a new one is issued, so a rotated
+        // session must reach the listener even if `result` then turns out to
+        // be an error, or the caller is left holding a refresh token that no
+        // longer works. But only if it was actually rotated *and* adopted:
+        // see `adopt_refreshed` for why a sign-out mid-sync must win.
+        if session != original && self.adopt_refreshed(&original, session.clone()) {
             if let Some(on_refreshed) = lock(&self.on_session_refreshed).clone() {
                 on_refreshed(session);
             }
@@ -105,6 +105,22 @@ impl State {
         if let Some(listener) = lock(&self.on_result).clone() {
             listener(result);
         }
+    }
+
+    /// Compare-and-swap: replaces the stored session with `refreshed` only
+    /// if it is still `original`, the session the refresh started from.
+    /// Anything else means the caller changed it mid-sync -- signed out
+    /// (`None`) or signed in as someone else -- and writing the refreshed
+    /// one back would silently undo that, resurrecting a session the user
+    /// just got rid of. Returns whether `refreshed` was adopted, i.e.
+    /// whether it is safe to persist.
+    fn adopt_refreshed(&self, original: &Session, refreshed: Session) -> bool {
+        let mut current = lock(&self.session);
+        if current.as_ref() != Some(original) {
+            return false;
+        }
+        *current = Some(refreshed);
+        true
     }
 }
 
@@ -171,6 +187,16 @@ impl AutoSyncCoordinator {
     /// down the background thread.
     pub fn set_session(&self, session: Option<Session>) {
         *lock(&self.state.session) = session;
+    }
+
+    /// For a refresh that happened outside this coordinator (a manual "Sync
+    /// Now" round): adopts `refreshed` as the session auto-sync uses, but
+    /// only if the coordinator still holds `original` -- see
+    /// `State::adopt_refreshed`. `false` means the session changed in the
+    /// meantime (signed out, or a different account), so the caller must
+    /// not persist `refreshed` either.
+    pub fn adopt_refreshed(&self, original: &Session, refreshed: Session) -> bool {
+        self.state.adopt_refreshed(original, refreshed)
     }
 
     /// Requests an immediate sync attempt, bypassing the debounce/periodic
@@ -463,6 +489,144 @@ mod tests {
 
         state.attempt_sync(); // must not panic
         assert!(lock(&state.last_attempt).is_some()); // still records the attempt time
+    }
+
+    /// A transport whose pull announces it has started, then stalls --
+    /// stands in for a slow network round-trip, so a test can change the
+    /// session while a sync is provably in flight.
+    struct StallingTransport {
+        started: Mutex<mpsc::Sender<()>>,
+        stall: Duration,
+    }
+
+    impl SyncTransport for StallingTransport {
+        fn push(&self, _: &str, _: u64, _: Vec<u8>) -> Result<(), SyncError> {
+            Ok(())
+        }
+
+        fn pull(&self, _: &str, _: Option<i64>) -> Result<Vec<crate::PulledUpdate>, SyncError> {
+            let _ = lock(&self.started).send(());
+            thread::sleep(self.stall);
+            Ok(vec![])
+        }
+    }
+
+    fn stalling(stall: Duration) -> (Arc<StallingTransport>, mpsc::Receiver<()>) {
+        let (tx, rx) = mpsc::channel();
+        let transport = StallingTransport {
+            started: Mutex::new(tx),
+            stall,
+        };
+        (Arc::new(transport), rx)
+    }
+
+    #[test]
+    fn signing_out_mid_sync_is_not_undone_when_the_sync_finishes() {
+        let dir = TempDir::new().unwrap();
+        let app = open(&dir, "a.sqlite3");
+        let (transport, started) = stalling(Duration::from_millis(100));
+        let coordinator = AutoSyncCoordinator::with_config(
+            Arc::clone(&app),
+            SyncEngine::new(transport as Arc<dyn SyncTransport>, unused_auth()),
+            fast_config(),
+        );
+        let (tx, rx) = mpsc::channel();
+        coordinator.set_session_listener(move |session| tx.send(session).unwrap());
+        coordinator.set_session(Some(session("tok")));
+        coordinator.sync_soon();
+
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        coordinator.set_session(None); // the user signs out mid-sync
+
+        // The in-flight sync finishing must neither resurrect the session
+        // in the coordinator nor hand it back to be persisted.
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+        assert_eq!(*lock(&coordinator.state.session), None);
+        drop(coordinator);
+    }
+
+    #[test]
+    fn adopt_refreshed_replaces_the_session_only_if_it_is_still_the_original() {
+        let dir = TempDir::new().unwrap();
+        let app = open(&dir, "a.sqlite3");
+        let transport = Arc::new(InMemoryTransport::new());
+        let coordinator = AutoSyncCoordinator::with_config(
+            app,
+            SyncEngine::new(transport as Arc<dyn SyncTransport>, unused_auth()),
+            // Never syncs on its own during this test, so nothing but
+            // `adopt_refreshed` itself touches the session.
+            CoordinatorConfig {
+                debounce: Duration::from_secs(60),
+                periodic: Duration::from_secs(60),
+                poll: Duration::from_millis(5),
+            },
+        );
+        let original = session("old");
+        let refreshed = session("new");
+
+        // Signed out: nothing to adopt into.
+        assert!(!coordinator.adopt_refreshed(&original, refreshed.clone()));
+        assert_eq!(*lock(&coordinator.state.session), None);
+
+        // A different session (another account) since the refresh started.
+        let other = session("someone-else");
+        coordinator.set_session(Some(other.clone()));
+        assert!(!coordinator.adopt_refreshed(&original, refreshed.clone()));
+        assert_eq!(*lock(&coordinator.state.session), Some(other));
+
+        // Still the original: adopted.
+        coordinator.set_session(Some(original.clone()));
+        assert!(coordinator.adopt_refreshed(&original, refreshed.clone()));
+        assert_eq!(*lock(&coordinator.state.session), Some(refreshed));
+        drop(coordinator);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refresh_that_races_a_sign_out_is_not_reported() {
+        let auth_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v1/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "refreshed-access",
+                "refresh_token": "refreshed-refresh",
+                "token_type": "bearer",
+                "expires_in": 3600,
+                "user": { "id": "user", "email": "a@example.com" }
+            })))
+            .mount(&auth_server)
+            .await;
+
+        // `spawn_blocking` for the same reason as the rotated-session test
+        // below: the blocking `reqwest` client can't be dropped in async.
+        let auth_uri = auth_server.uri();
+        tokio::task::spawn_blocking(move || {
+            let dir = TempDir::new().unwrap();
+            let app = open(&dir, "a.sqlite3");
+            let (transport, started) = stalling(Duration::from_millis(100));
+            let auth = AuthClient::with_clock(auth_uri, "anon-key", Arc::new(FixedClock(0)));
+            let coordinator = AutoSyncCoordinator::with_config(
+                Arc::clone(&app),
+                SyncEngine::new(transport as Arc<dyn SyncTransport>, auth),
+                fast_config(),
+            );
+            let (tx, rx) = mpsc::channel();
+            coordinator.set_session_listener(move |session| tx.send(session).unwrap());
+            coordinator.set_session(Some(Session {
+                expires_at: 0,
+                ..session("stale-access")
+            }));
+            coordinator.sync_soon();
+
+            // The refresh has already happened by the time pull starts.
+            started.recv_timeout(Duration::from_secs(2)).unwrap();
+            coordinator.set_session(None);
+
+            assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+            assert_eq!(*lock(&coordinator.state.session), None);
+            drop(coordinator);
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

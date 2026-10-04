@@ -65,7 +65,7 @@ public final class TodoModel {
                     Task { @MainActor in self?.lastSyncError = "\(error)" }
                 },
                 onSessionRefreshed: { [weak self] session in
-                    Task { @MainActor in self?.persist(session) }
+                    Task { @MainActor in self?.persistRefreshed(session) }
                 }
             )
             self.autoSyncBridge = autoSyncBridge
@@ -149,7 +149,10 @@ public final class TodoModel {
     }
 
     /// Deliberately local-only: local data is kept exactly as is, this just
-    /// forgets the credential so syncing stops until signed in again.
+    /// forgets the credential so syncing stops until signed in again. If a
+    /// *different* account signs in next, its first sync round resets local
+    /// data (`App::bind_sync_account` on the Rust side), so the two
+    /// accounts' todos never mix.
     public func signOut() {
         KeychainStore.delete()
         isSignedIn = false
@@ -179,7 +182,7 @@ public final class TodoModel {
                 }
             },
             onSessionRefreshed: { [weak self] session in
-                Task { @MainActor in self?.persist(session) }
+                Task { @MainActor in self?.persistRefreshed(session) }
             }
         )
         syncClient.syncNow(app: app, session: session, listener: statusBridge)
@@ -195,6 +198,17 @@ public final class TodoModel {
         if let data = try? JSONEncoder().encode(stored) {
             KeychainStore.save(data)
         }
+    }
+
+    /// For sessions rotated by a sync round, which report back through a
+    /// hop to the main actor -- a `signOut` can land in between, and
+    /// persisting after it would put the credential straight back. Rust
+    /// already refuses to report a refresh that raced a sign-out it saw
+    /// (`AutoSyncCoordinator::adopt_refreshed`); this covers the window
+    /// after that check but before this runs.
+    private func persistRefreshed(_ session: Session) {
+        guard isSignedIn else { return }
+        persist(session)
     }
 
     private func loadSession() -> Session? {

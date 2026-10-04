@@ -8,7 +8,7 @@
 use std::sync::{Arc, Mutex};
 
 use tempfile::TempDir;
-use todo_core::{App, Command, Store};
+use todo_core::{App, Command, CoreError, Store};
 
 fn db_path(dir: &TempDir, name: &str) -> String {
     dir.path().join(name).to_str().unwrap().to_string()
@@ -172,4 +172,130 @@ fn two_devices_converge_via_manual_push_pull_cycle() {
     assert!(titles_a.contains(&"from a".to_string()));
     assert!(titles_a.contains(&"from b".to_string()));
     assert_eq!(titles_a.len(), titles_b.len());
+}
+
+#[test]
+fn first_sync_account_binding_keeps_local_data() {
+    let dir = TempDir::new().unwrap();
+    let app = App::open(&db_path(&dir, "todo.sqlite3")).unwrap();
+    add(&app, "made before signing in");
+    let peer = app.peer_id();
+
+    assert!(!app.bind_sync_account("user-a").unwrap());
+
+    assert_eq!(app.sync_account().unwrap().as_deref(), Some("user-a"));
+    assert_eq!(app.current().rows[0].title, "made before signing in");
+    assert_eq!(app.peer_id(), peer);
+}
+
+#[test]
+fn rebinding_the_same_sync_account_is_a_no_op() {
+    let dir = TempDir::new().unwrap();
+    let app = App::open(&db_path(&dir, "todo.sqlite3")).unwrap();
+    app.bind_sync_account("user-a").unwrap();
+    add(&app, "a's task");
+    app.mark_pulled(7).unwrap();
+
+    assert!(!app.bind_sync_account("user-a").unwrap());
+
+    assert_eq!(app.current().rows.len(), 1);
+    assert_eq!(app.last_pulled_seq().unwrap(), Some(7));
+}
+
+#[test]
+fn binding_a_different_sync_account_resets_local_state() {
+    let dir = TempDir::new().unwrap();
+    let app = App::open(&db_path(&dir, "todo.sqlite3")).unwrap();
+    app.set_local_offset_seconds(3_600);
+    app.bind_sync_account("user-a").unwrap();
+    add(&app, "a's task");
+    app.dispatch(Command::AddList {
+        name: "A's list".to_string(),
+        after: None,
+    })
+    .unwrap();
+    let a_list = app
+        .current()
+        .lists
+        .into_iter()
+        .find(|l| l.name == "A's list")
+        .unwrap()
+        .id;
+    app.set_current_list(a_list.clone()).unwrap();
+    app.mark_pulled(7).unwrap();
+    app.mark_pushed().unwrap();
+    let a_peer = app.peer_id();
+    let due_before = app.detect_due("x today").unwrap().due;
+
+    let snapshots = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&snapshots);
+    app.subscribe(move |s| seen.lock().unwrap().push(s.clone()));
+
+    assert!(app.bind_sync_account("user-b").unwrap());
+
+    let snap = app.current();
+    assert!(snap.rows.is_empty());
+    assert!(snap.lists.iter().all(|l| l.id != a_list));
+    assert_ne!(snap.current_list, a_list);
+    assert_ne!(app.peer_id(), a_peer);
+    assert_eq!(app.last_pulled_seq().unwrap(), None);
+    assert_eq!(app.sync_account().unwrap().as_deref(), Some("user-b"));
+    // Nothing of A's counts as already pushed -- only B's fresh bootstrap
+    // list is waiting.
+    assert!(app.has_unpushed_changes().unwrap());
+    // The device's local offset is not account data; it survives.
+    assert_eq!(app.detect_due("x today").unwrap().due, due_before);
+    // Subscribers see the reset like any other change.
+    assert!(snapshots.lock().unwrap().last().unwrap().rows.is_empty());
+}
+
+#[test]
+fn a_sync_account_reset_survives_reopen() {
+    let dir = TempDir::new().unwrap();
+    let path = db_path(&dir, "todo.sqlite3");
+    let b_peer = {
+        let app = App::open(&path).unwrap();
+        app.bind_sync_account("user-a").unwrap();
+        add(&app, "a's task");
+        app.flush().unwrap();
+        app.bind_sync_account("user-b").unwrap();
+        app.peer_id()
+    };
+
+    let app = App::open(&path).unwrap();
+    assert!(app.current().rows.is_empty());
+    assert_eq!(app.peer_id(), b_peer);
+    assert_eq!(app.sync_account().unwrap().as_deref(), Some("user-b"));
+}
+
+#[test]
+fn a_failed_sync_account_reset_leaves_the_previous_account_intact() {
+    let dir = TempDir::new().unwrap();
+    let path = db_path(&dir, "todo.sqlite3");
+    let app = App::open(&path).unwrap();
+    app.bind_sync_account("user-a").unwrap();
+    add(&app, "a's task");
+    app.mark_pulled(7).unwrap();
+    let a_peer = app.peer_id();
+
+    // Makes the reset's transaction fail partway (its first statement
+    // deletes the sync cursors), the way a full disk or I/O error would.
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER fail_reset BEFORE DELETE ON meta
+             BEGIN SELECT RAISE(ABORT, 'simulated failure'); END;",
+        )
+        .unwrap();
+
+    assert!(matches!(
+        app.bind_sync_account("user-b"),
+        Err(CoreError::Storage(_))
+    ));
+
+    // Nothing half-applied, in memory or on disk.
+    assert_eq!(app.current().rows[0].title, "a's task");
+    assert_eq!(app.peer_id(), a_peer);
+    assert_eq!(app.sync_account().unwrap().as_deref(), Some("user-a"));
+    assert_eq!(app.last_pulled_seq().unwrap(), Some(7));
 }
