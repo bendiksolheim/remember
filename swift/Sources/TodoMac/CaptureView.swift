@@ -40,8 +40,8 @@ struct CaptureView: SwiftUI.View {
     /// never silently suppressed by an old dismissal.
     @State private var dueDismissed = false
     /// Unifies the quick-add field and every row into one keyboard-focus
-    /// chain: alt+j/alt+k walk `focusChain` (input first, then rows in
-    /// display order) and wrap at both ends. `fileprivate`, not `private`,
+    /// chain: alt+j/alt+k (and plain down/up arrow) walk `focusChain` (input
+    /// first, then rows in display order) and wrap at both ends. `fileprivate`, not `private`,
     /// so `CaptureTaskRow` below (a sibling type, not an extension of this
     /// one) can name it in its own `FocusState<...>.Binding` parameter.
     fileprivate enum FocusTarget: Hashable {
@@ -277,6 +277,27 @@ struct CaptureView: SwiftUI.View {
         guard optionNavMonitor == nil else { return }
         optionNavMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            // Bare down/up arrow mirror alt+j/alt+k's plain focus-move (not
+            // the alt+shift+j/k reorder) -- no modifier to check here since
+            // arrows have no other meaning in this panel (no multi-line
+            // fields, no list history to recall). AppKit tags every arrow
+            // key event with `.numericPad` (and often `.function`) in
+            // `modifierFlags` even with no modifier actually held, so those
+            // two are stripped before checking for "no real modifier" --
+            // `flags.isEmpty` alone is never true for an arrow press.
+            let arrowFlags = flags.subtracting([.numericPad, .function])
+            if arrowFlags.isEmpty, editingRowID == nil {
+                switch event.keyCode {
+                case 125: // kVK_DownArrow
+                    moveFocus(by: 1)
+                    return nil
+                case 126: // kVK_UpArrow
+                    moveFocus(by: -1)
+                    return nil
+                default:
+                    break
+                }
+            }
             guard flags == [.option] || flags == [.option, .shift] else { return event }
             // `charactersIgnoringModifiers` honors Shift (only Option is
             // stripped), so alt+shift+j arrives as "J" -- lowercase first to
