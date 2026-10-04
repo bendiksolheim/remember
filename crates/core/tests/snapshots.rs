@@ -15,11 +15,11 @@ fn fixture() -> Doc {
 
     doc.apply(
         Command::Add {
-                title: "Buy milk".to_string(),
-                after: None,
-                due: None,
-                list_id: None,
-            },
+            title: "Buy milk".to_string(),
+            after: None,
+            due: None,
+            list_id: None,
+        },
         &clock,
         &ids,
     )
@@ -27,16 +27,18 @@ fn fixture() -> Doc {
 
     doc.apply(
         Command::Add {
-                title: "Write report".to_string(),
-                after: None,
-                due: None,
-                list_id: None,
-            },
+            title: "Write report".to_string(),
+            after: None,
+            due: None,
+            list_id: None,
+        },
         &clock,
         &ids,
     )
     .unwrap();
-    let write_report = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0].id.clone();
+    let write_report = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0]
+        .id
+        .clone();
     doc.apply(
         Command::SetDue {
             id: write_report,
@@ -49,16 +51,18 @@ fn fixture() -> Doc {
 
     doc.apply(
         Command::Add {
-                title: "Call dentist".to_string(),
-                after: None,
-                due: None,
-                list_id: None,
-            },
+            title: "Call dentist".to_string(),
+            after: None,
+            due: None,
+            list_id: None,
+        },
         &clock,
         &ids,
     )
     .unwrap();
-    let call_dentist = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0].id.clone();
+    let call_dentist = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0]
+        .id
+        .clone();
     doc.apply(
         Command::SetDue {
             id: call_dentist,
@@ -71,16 +75,18 @@ fn fixture() -> Doc {
 
     doc.apply(
         Command::Add {
-                title: "Pay rent".to_string(),
-                after: None,
-                due: None,
-                list_id: None,
-            },
+            title: "Pay rent".to_string(),
+            after: None,
+            due: None,
+            list_id: None,
+        },
         &clock,
         &ids,
     )
     .unwrap();
-    let pay_rent = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0].id.clone();
+    let pay_rent = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0]
+        .id
+        .clone();
     doc.apply(
         Command::SetDue {
             id: pay_rent,
@@ -93,16 +99,18 @@ fn fixture() -> Doc {
 
     doc.apply(
         Command::Add {
-                title: "Clean garage".to_string(),
-                after: None,
-                due: None,
-                list_id: None,
-            },
+            title: "Clean garage".to_string(),
+            after: None,
+            due: None,
+            list_id: None,
+        },
         &clock,
         &ids,
     )
     .unwrap();
-    let clean_garage = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0].id.clone();
+    let clean_garage = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0]
+        .id
+        .clone();
     doc.apply(
         Command::SetDone {
             id: clean_garage,
@@ -115,16 +123,18 @@ fn fixture() -> Doc {
 
     doc.apply(
         Command::Add {
-                title: "Submit taxes".to_string(),
-                after: None,
-                due: None,
-                list_id: None,
-            },
+            title: "Submit taxes".to_string(),
+            after: None,
+            due: None,
+            list_id: None,
+        },
         &clock,
         &ids,
     )
     .unwrap();
-    let submit_taxes = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0].id.clone();
+    let submit_taxes = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0]
+        .id
+        .clone();
     doc.apply(
         Command::SetDue {
             id: submit_taxes.clone(),

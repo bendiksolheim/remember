@@ -72,6 +72,9 @@ private struct ListSettingsRow: SwiftUI.View {
 
     var body: some SwiftUI.View {
         HStack {
+            Circle()
+                .fill(color(for: list.color))
+                .frame(width: 10, height: 10)
             TextField("", text: $name)
                 .textFieldStyle(.plain)
                 .onChange(of: name) { _, newValue in

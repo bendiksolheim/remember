@@ -11,12 +11,26 @@ pub struct TaskRow {
     pub done: bool,
     pub due: Option<i64>,
     pub due_label: Option<String>,
-    pub overdue: bool,
+    pub due_state: DueState,
     pub list_id: String,
     /// Denormalized from `lists` so a cross-list ("All") view can render
     /// which list a row belongs to without Swift ever joining `list_id`
     /// against the roster itself.
     pub list_name: String,
+}
+
+/// A task's urgency relative to "today" — the same calendar-day comparison
+/// `is_overdue` used to make alone, now split into three buckets instead of
+/// a bool so overdue and due-today can get distinct treatment (e.g. color)
+/// without the two ever being representable as simultaneously true. `None`
+/// means no due date at all; `due_state` only produces the other three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+pub enum DueState {
+    #[default]
+    None,
+    Later,
+    Today,
+    Overdue,
 }
 
 /// One entry in the `lists` roster, in sidebar display order. Always at
@@ -26,6 +40,65 @@ pub struct TaskRow {
 pub struct ListRow {
     pub id: String,
     pub name: String,
+    pub color: ListColor,
+}
+
+/// A list's identity color — an opaque palette slot, not a hex value, so
+/// the actual color each one maps to is entirely the UI layer's call (and
+/// can be re-themed there without touching stored data). Assigned once, at
+/// creation, to the lowest slot not already taken by a sibling list (see
+/// `Doc::apply_add_list`), and persisted from then on — unlike a computed
+/// hash of the list's id, this is real content, synced like any other field,
+/// so it can actually guarantee every list in the roster gets a distinct
+/// color instead of merely making collisions unlikely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize)]
+pub enum ListColor {
+    #[default]
+    Blue,
+    Purple,
+    Pink,
+    Orange,
+    Teal,
+    Indigo,
+    Mint,
+    Yellow,
+    Cyan,
+}
+
+impl ListColor {
+    pub const ALL: [ListColor; 9] = [
+        ListColor::Blue,
+        ListColor::Purple,
+        ListColor::Pink,
+        ListColor::Orange,
+        ListColor::Teal,
+        ListColor::Indigo,
+        ListColor::Mint,
+        ListColor::Yellow,
+        ListColor::Cyan,
+    ];
+
+    /// Wraps rather than panics past the end of `ALL`: once there are more
+    /// lists than palette slots, every index is already somebody's color,
+    /// and collisions from here on are an unavoidable consequence of a
+    /// finite palette — not a bug to guard against.
+    pub fn from_index(index: u8) -> ListColor {
+        Self::ALL[index as usize % Self::ALL.len()]
+    }
+
+    pub fn to_index(self) -> u8 {
+        match self {
+            ListColor::Blue => 0,
+            ListColor::Purple => 1,
+            ListColor::Pink => 2,
+            ListColor::Orange => 3,
+            ListColor::Teal => 4,
+            ListColor::Indigo => 5,
+            ListColor::Mint => 6,
+            ListColor::Yellow => 7,
+            ListColor::Cyan => 8,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -79,9 +152,18 @@ pub fn due_label(due: i64, now: i64, offset_seconds: i32) -> String {
     }
 }
 
-pub(crate) fn is_overdue(due: i64, now: i64, offset_seconds: i32) -> bool {
+/// `due`'s urgency relative to `now`, given a due date is actually present
+/// (callers map `DueState::None` in themselves when there isn't one — see
+/// `Doc::read`). Never returns `None` itself.
+pub(crate) fn due_state(due: i64, now: i64, offset_seconds: i32) -> DueState {
     let offset = i64::from(offset_seconds);
-    civil::day_number(due + offset) < civil::day_number(now + offset)
+    let due_day = civil::day_number(due + offset);
+    let now_day = civil::day_number(now + offset);
+    match due_day.cmp(&now_day) {
+        std::cmp::Ordering::Less => DueState::Overdue,
+        std::cmp::Ordering::Equal => DueState::Today,
+        std::cmp::Ordering::Greater => DueState::Later,
+    }
 }
 
 pub(crate) fn matches_filter(done: bool, view: ViewFilter) -> bool {
@@ -142,10 +224,10 @@ mod tests {
     }
 
     #[test]
-    fn is_overdue_boundary() {
-        assert!(!is_overdue(1_000, 1_000, 0));
-        assert!(!is_overdue(DAY, 0, 0));
-        assert!(is_overdue(0, DAY, 0));
+    fn due_state_boundary() {
+        assert_eq!(due_state(1_000, 1_000, 0), DueState::Today);
+        assert_eq!(due_state(DAY, 0, 0), DueState::Later);
+        assert_eq!(due_state(0, DAY, 0), DueState::Overdue);
     }
 
     #[test]
@@ -159,7 +241,7 @@ mod tests {
         let now = 100_800;
         let due = 115_200;
         assert_eq!(due_label(due, now, offset), "Tomorrow");
-        assert!(!is_overdue(due, now, offset));
+        assert_eq!(due_state(due, now, offset), DueState::Later);
         // Without the offset, the same instants read as "Today" instead —
         // documents the bug this shift fixes, not just the fix itself.
         assert_eq!(due_label(due, now, 0), "Today");
@@ -172,8 +254,8 @@ mod tests {
         let offset = 12 * 3_600;
         let now = 46_800;
         let due = 0;
-        assert!(is_overdue(due, now, offset));
-        assert!(!is_overdue(due, now, 0));
+        assert_eq!(due_state(due, now, offset), DueState::Overdue);
+        assert_eq!(due_state(due, now, 0), DueState::Today);
     }
 
     #[test]

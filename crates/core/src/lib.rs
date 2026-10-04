@@ -19,7 +19,7 @@ pub use clock::{Clock, IdSource, SystemClock, UuidSource};
 pub use clock::{FixedClock, SeqIdSource};
 pub use command::{Command, ListFilter, ViewFilter};
 pub use doc::Doc;
-pub use snapshot::{DueDetection, ListRow, Snapshot, TaskRow};
+pub use snapshot::{DueDetection, DueState, ListColor, ListRow, Snapshot, TaskRow};
 pub use store::Store;
 
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -139,12 +139,60 @@ impl App {
     pub fn dispatch(&self, command: Command) -> Result<(), CoreError> {
         let mut state = lock(&self.shared.state);
         let command = Self::resolve_capture_list(command, &state.capture_list_id);
-        state
-            .doc
-            .apply(command, self.shared.clock.as_ref(), self.shared.ids.as_ref())?;
+        let deleted_list_id = match &command {
+            Command::DeleteList { id } => Some(id.clone()),
+            _ => None,
+        };
+        state.doc.apply(
+            command,
+            self.shared.clock.as_ref(),
+            self.shared.ids.as_ref(),
+        )?;
+        if let Some(deleted_id) = deleted_list_id {
+            self.repair_list_pointers(&mut state, &deleted_id)?;
+        }
         drop(state);
         *lock(&self.shared.dirty_since) = Some(Instant::now());
         self.notify();
+        Ok(())
+    }
+
+    /// Re-points `capture_list_id`/`current_list` when a successful
+    /// `DeleteList` just removed the list either was pointing at — otherwise
+    /// the next capture would fail with `NotFound` (or the view would keep
+    /// filtering on a list that no longer exists) until the user manually
+    /// picked a new one. Falls back to the first list in sidebar order;
+    /// `apply_delete_list`'s last-remaining-list guard means there's always
+    /// at least one left.
+    fn repair_list_pointers(
+        &self,
+        state: &mut AppState,
+        deleted_id: &str,
+    ) -> Result<(), CoreError> {
+        let capture_needs_repair = state.capture_list_id == deleted_id;
+        let current_needs_repair =
+            matches!(&state.current_list, ListFilter::List(id) if id == deleted_id);
+        if !capture_needs_repair && !current_needs_repair {
+            return Ok(());
+        }
+
+        let snapshot = state
+            .doc
+            .read(ViewFilter::All, ListFilter::All, self.shared.clock.as_ref());
+        let fallback_id = snapshot
+            .lists
+            .first()
+            .map(|list| list.id.clone())
+            .ok_or_else(|| CoreError::Document("no lists remain after delete".to_string()))?;
+
+        if capture_needs_repair {
+            self.shared.store.save_capture_list(&fallback_id)?;
+            state.capture_list_id = fallback_id.clone();
+        }
+        if current_needs_repair {
+            self.shared.store.save_current_list(Some(&fallback_id))?;
+            state.current_list = ListFilter::List(fallback_id);
+        }
         Ok(())
     }
 
@@ -216,9 +264,9 @@ impl App {
     }
 
     /// Sets the local UTC offset (seconds) used to compute "today" for both
-    /// `current()`'s `due_label`/`overdue` fields and `detect_due`'s phrase
+    /// `current()`'s `due_label`/`due_state` fields and `detect_due`'s phrase
     /// resolution. Not a document mutation — see `Doc::set_local_offset_seconds`
-    /// — but it does push a fresh snapshot, since existing rows' overdue
+    /// — but it does push a fresh snapshot, since existing rows' due
     /// status/labels can change even though nothing was actually edited
     /// (e.g. the device crossed into a new local day, or the user
     /// travelled). Call at launch and again whenever it might have changed:
@@ -232,7 +280,7 @@ impl App {
 
     /// Detects a due-date phrase at the end of `text` (see [`due_parse`]),
     /// resolved against the current local day — the same "today" `current()`
-    /// uses for `due_label`/`overdue`. A pure lookup: never touches the
+    /// uses for `due_label`/`due_state`. A pure lookup: never touches the
     /// document, never commits, never bumps `revision`. `None` if `text`
     /// doesn't end in a recognized phrase.
     pub fn detect_due(&self, text: &str) -> Option<DueDetection> {
@@ -250,10 +298,11 @@ impl App {
 
     pub fn current(&self) -> Snapshot {
         let state = lock(&self.shared.state);
-        let mut snapshot =
-            state
-                .doc
-                .read(state.view, state.current_list.clone(), self.shared.clock.as_ref());
+        let mut snapshot = state.doc.read(
+            state.view,
+            state.current_list.clone(),
+            self.shared.clock.as_ref(),
+        );
         snapshot.capture_list_id = state.capture_list_id.clone();
         snapshot
     }

@@ -84,6 +84,16 @@ pub enum View {
     Completed,
 }
 
+/// A task's urgency relative to "today". Mirrors `todo_core::DueState`.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DueState {
+    #[default]
+    None,
+    Later,
+    Today,
+    Overdue,
+}
+
 /// Which list(s) a `Snapshot` reflects. Mirrors `todo_core::ListFilter`.
 #[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
 pub enum ListFilter {
@@ -96,6 +106,23 @@ pub enum ListFilter {
 pub struct ListRow {
     pub id: String,
     pub name: String,
+    pub color: ListColor,
+}
+
+/// A list's identity color — an opaque palette slot, not a hex value.
+/// Mirrors `todo_core::ListColor`.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ListColor {
+    #[default]
+    Blue,
+    Purple,
+    Pink,
+    Orange,
+    Teal,
+    Indigo,
+    Mint,
+    Yellow,
+    Cyan,
 }
 
 #[derive(uniffi::Record)]
@@ -106,7 +133,7 @@ pub struct TaskRow {
     pub done: bool,
     pub due: Option<i64>,
     pub due_label: Option<String>,
-    pub overdue: bool,
+    pub due_state: DueState,
     pub list_id: String,
     pub list_name: String,
 }

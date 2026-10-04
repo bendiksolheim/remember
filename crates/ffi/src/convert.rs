@@ -2,8 +2,8 @@
 //! Plain functions, no decisions — covered at 100%.
 
 use crate::{
-    AppError, Command, DueDetection, ListFilter, ListRow, Session, Snapshot, SyncError,
-    SyncOutcome, TaskRow, View,
+    AppError, Command, DueDetection, DueState, ListColor, ListFilter, ListRow, Session, Snapshot,
+    SyncError, SyncOutcome, TaskRow, View,
 };
 
 pub fn command_to_core(command: Command) -> todo_core::Command {
@@ -65,10 +65,34 @@ pub fn list_filter_from_core(filter: todo_core::ListFilter) -> ListFilter {
     }
 }
 
+pub fn due_state_from_core(state: todo_core::DueState) -> DueState {
+    match state {
+        todo_core::DueState::None => DueState::None,
+        todo_core::DueState::Later => DueState::Later,
+        todo_core::DueState::Today => DueState::Today,
+        todo_core::DueState::Overdue => DueState::Overdue,
+    }
+}
+
+pub fn list_color_from_core(color: todo_core::ListColor) -> ListColor {
+    match color {
+        todo_core::ListColor::Blue => ListColor::Blue,
+        todo_core::ListColor::Purple => ListColor::Purple,
+        todo_core::ListColor::Pink => ListColor::Pink,
+        todo_core::ListColor::Orange => ListColor::Orange,
+        todo_core::ListColor::Teal => ListColor::Teal,
+        todo_core::ListColor::Indigo => ListColor::Indigo,
+        todo_core::ListColor::Mint => ListColor::Mint,
+        todo_core::ListColor::Yellow => ListColor::Yellow,
+        todo_core::ListColor::Cyan => ListColor::Cyan,
+    }
+}
+
 pub fn list_row_from_core(row: &todo_core::ListRow) -> ListRow {
     ListRow {
         id: row.id.clone(),
         name: row.name.clone(),
+        color: list_color_from_core(row.color),
     }
 }
 
@@ -80,7 +104,7 @@ pub fn task_row_from_core(row: &todo_core::TaskRow) -> TaskRow {
         done: row.done,
         due: row.due,
         due_label: row.due_label.clone(),
-        overdue: row.overdue,
+        due_state: due_state_from_core(row.due_state),
         list_id: row.list_id.clone(),
         list_name: row.list_name.clone(),
     }
@@ -288,7 +312,10 @@ mod tests {
 
     #[test]
     fn list_filter_round_trips_all() {
-        assert_eq!(list_filter_to_core(ListFilter::All), todo_core::ListFilter::All);
+        assert_eq!(
+            list_filter_to_core(ListFilter::All),
+            todo_core::ListFilter::All
+        );
         assert_eq!(
             list_filter_from_core(todo_core::ListFilter::All),
             ListFilter::All
@@ -298,12 +325,16 @@ mod tests {
     #[test]
     fn list_filter_round_trips_list() {
         assert_eq!(
-            list_filter_to_core(ListFilter::List { id: "l".to_string() }),
+            list_filter_to_core(ListFilter::List {
+                id: "l".to_string()
+            }),
             todo_core::ListFilter::List("l".to_string())
         );
         assert_eq!(
             list_filter_from_core(todo_core::ListFilter::List("l".to_string())),
-            ListFilter::List { id: "l".to_string() }
+            ListFilter::List {
+                id: "l".to_string()
+            }
         );
     }
 
@@ -312,12 +343,58 @@ mod tests {
         let row = list_row_from_core(&todo_core::ListRow {
             id: "l".to_string(),
             name: "Work".to_string(),
+            color: todo_core::ListColor::Teal,
         });
         assert_eq!(row.id, "l");
         assert_eq!(row.name, "Work");
+        assert_eq!(row.color, ListColor::Teal);
     }
 
-    fn sample_core_row(due: Option<i64>, due_label: Option<&str>) -> todo_core::TaskRow {
+    #[test]
+    fn list_color_round_trips_every_variant() {
+        assert_eq!(
+            list_color_from_core(todo_core::ListColor::Blue),
+            ListColor::Blue
+        );
+        assert_eq!(
+            list_color_from_core(todo_core::ListColor::Purple),
+            ListColor::Purple
+        );
+        assert_eq!(
+            list_color_from_core(todo_core::ListColor::Pink),
+            ListColor::Pink
+        );
+        assert_eq!(
+            list_color_from_core(todo_core::ListColor::Orange),
+            ListColor::Orange
+        );
+        assert_eq!(
+            list_color_from_core(todo_core::ListColor::Teal),
+            ListColor::Teal
+        );
+        assert_eq!(
+            list_color_from_core(todo_core::ListColor::Indigo),
+            ListColor::Indigo
+        );
+        assert_eq!(
+            list_color_from_core(todo_core::ListColor::Mint),
+            ListColor::Mint
+        );
+        assert_eq!(
+            list_color_from_core(todo_core::ListColor::Yellow),
+            ListColor::Yellow
+        );
+        assert_eq!(
+            list_color_from_core(todo_core::ListColor::Cyan),
+            ListColor::Cyan
+        );
+    }
+
+    fn sample_core_row(
+        due: Option<i64>,
+        due_label: Option<&str>,
+        due_state: todo_core::DueState,
+    ) -> todo_core::TaskRow {
         todo_core::TaskRow {
             id: "id".to_string(),
             title: "title".to_string(),
@@ -325,7 +402,7 @@ mod tests {
             done: true,
             due,
             due_label: due_label.map(str::to_string),
-            overdue: due.is_some(),
+            due_state,
             list_id: "l".to_string(),
             list_name: "List".to_string(),
         }
@@ -333,24 +410,48 @@ mod tests {
 
     #[test]
     fn task_row_converts_with_due_present() {
-        let row = task_row_from_core(&sample_core_row(Some(42), Some("Today")));
+        let row = task_row_from_core(&sample_core_row(
+            Some(42),
+            Some("Today"),
+            todo_core::DueState::Overdue,
+        ));
         assert_eq!(row.id, "id");
         assert_eq!(row.title, "title");
         assert_eq!(row.notes, "notes");
         assert!(row.done);
         assert_eq!(row.due, Some(42));
         assert_eq!(row.due_label.as_deref(), Some("Today"));
-        assert!(row.overdue);
+        assert_eq!(row.due_state, DueState::Overdue);
         assert_eq!(row.list_id, "l");
         assert_eq!(row.list_name, "List");
     }
 
     #[test]
     fn task_row_converts_with_due_absent() {
-        let row = task_row_from_core(&sample_core_row(None, None));
+        let row = task_row_from_core(&sample_core_row(None, None, todo_core::DueState::None));
         assert_eq!(row.due, None);
         assert_eq!(row.due_label, None);
-        assert!(!row.overdue);
+        assert_eq!(row.due_state, DueState::None);
+    }
+
+    #[test]
+    fn due_state_round_trips_every_variant() {
+        assert_eq!(
+            due_state_from_core(todo_core::DueState::None),
+            DueState::None
+        );
+        assert_eq!(
+            due_state_from_core(todo_core::DueState::Later),
+            DueState::Later
+        );
+        assert_eq!(
+            due_state_from_core(todo_core::DueState::Today),
+            DueState::Today
+        );
+        assert_eq!(
+            due_state_from_core(todo_core::DueState::Overdue),
+            DueState::Overdue
+        );
     }
 
     #[test]
@@ -368,13 +469,18 @@ mod tests {
     #[test]
     fn snapshot_converts_rows_and_fields() {
         let core_snapshot = todo_core::Snapshot {
-            rows: vec![sample_core_row(Some(1), Some("Today"))],
+            rows: vec![sample_core_row(
+                Some(1),
+                Some("Today"),
+                todo_core::DueState::Today,
+            )],
             view: todo_core::ViewFilter::Active,
             current_list: todo_core::ListFilter::List("l".to_string()),
             capture_list_id: "l".to_string(),
             lists: vec![todo_core::ListRow {
                 id: "l".to_string(),
                 name: "List".to_string(),
+                color: todo_core::ListColor::Pink,
             }],
             active_count: 3,
             can_undo: true,
@@ -385,7 +491,12 @@ mod tests {
         assert_eq!(snapshot.rows.len(), 1);
         assert_eq!(snapshot.rows[0].id, "id");
         assert!(matches!(snapshot.view, View::Active));
-        assert_eq!(snapshot.current_list, ListFilter::List { id: "l".to_string() });
+        assert_eq!(
+            snapshot.current_list,
+            ListFilter::List {
+                id: "l".to_string()
+            }
+        );
         assert_eq!(snapshot.capture_list_id, "l");
         assert_eq!(snapshot.lists.len(), 1);
         assert_eq!(snapshot.lists[0].id, "l");

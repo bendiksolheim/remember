@@ -11,9 +11,18 @@
 //!   name string (no nested map needed for a single field).
 //! - `list_order` — a `LoroMovableList` of list UUID strings, for sidebar
 //!   display order.
+//! - `list_colors` — a flat `LoroMap` keyed by list UUID, each value the
+//!   `u8` index of a [`crate::snapshot::ListColor`] slot. A second flat map
+//!   rather than a new field on `lists`' existing string values, so it
+//!   layers on without changing what's already there — see
+//!   [`bootstrap_list_colors`] for how a list from before this field existed
+//!   gets one.
 //!
-//! No derived state (sort index, cached `overdue`, formatted date) is ever
-//! stored in the document — all of that is computed in `read()`.
+//! No derived state (sort index, cached `due_state`, formatted date) is ever
+//! stored in the document — all of that is computed in `read()`. A list's
+//! color is the one exception that looks like it could be: it's assigned
+//! once and persisted like `name`, not recomputed from scratch on every
+//! read — see [`ListColor`]'s own doc comment for why.
 //!
 //! Every task belongs to exactly one list — `list_id` is never optional at
 //! the application level. A task written before lists existed has no
@@ -28,7 +37,10 @@ use loro::{ExportMode, LoroDoc, LoroMap, LoroMovableList, LoroValue, UndoManager
 
 use crate::clock::{Clock, IdSource};
 use crate::command::{Command, ListFilter, ViewFilter};
-use crate::snapshot::{due_label, is_overdue, matches_filter, matches_list_filter, ListRow, Snapshot, TaskRow};
+use crate::snapshot::{
+    due_label, due_state, matches_filter, matches_list_filter, DueState, ListColor, ListRow,
+    Snapshot, TaskRow,
+};
 use crate::CoreError;
 
 /// Fixed (not random) so that two devices which have never synced yet and
@@ -45,7 +57,7 @@ pub struct Doc {
     undo: UndoManager,
     revision: u64,
     /// The caller's local UTC offset, in seconds — used only to compute
-    /// "today" for `read()`'s `due_label`/`overdue` fields. Local display
+    /// "today" for `read()`'s `due_label`/`due_state` fields. Local display
     /// config, not CRDT content: never committed, never touches `revision`,
     /// never synced. Defaults to 0 (UTC) until the caller sets it — see
     /// `Doc::set_local_offset_seconds`.
@@ -117,9 +129,18 @@ fn dedup_list_order_ids(list_order: &LoroMovableList) -> Vec<String> {
 /// yet. Idempotent and safe to call on every open — see the module doc
 /// comment and this function's callers for why it must run before
 /// `UndoManager` attaches.
+///
+/// Checked by emptiness, not by whether `DEFAULT_LIST_ID` specifically is
+/// present: a user can delete the bootstrap-created list like any other
+/// (see `apply_delete_list`) once a replacement exists, and that deletion
+/// must stick across restarts rather than being silently undone here. The
+/// last-remaining-list guard in `apply_delete_list` means `lists` can only
+/// ever be empty before the very first list — bootstrapped or
+/// pre-lists-migrated — has been created, so this is equivalent to "has
+/// bootstrap ever run" without needing a separate persisted flag for it.
 fn bootstrap_default_list(doc: &LoroDoc) -> Result<(), CoreError> {
     let lists = doc.get_map("lists");
-    if lists.get(DEFAULT_LIST_ID).is_some() {
+    if !lists.is_empty() {
         return Ok(());
     }
     lists
@@ -128,6 +149,73 @@ fn bootstrap_default_list(doc: &LoroDoc) -> Result<(), CoreError> {
     doc.get_movable_list("list_order")
         .insert(0, DEFAULT_LIST_ID)
         .map_err(doc_err)?;
+    doc.commit();
+    Ok(())
+}
+
+/// The lowest [`ListColor`] index not already in `used`. Once every index is
+/// taken, reuse is unavoidable — a finite palette can't give more lists than
+/// it has slots a color of their own — so this falls back to wrapping
+/// around via [`ListColor::from_index`] rather than panicking.
+fn next_free_list_color(used: &std::collections::HashSet<u8>) -> ListColor {
+    (0..ListColor::ALL.len() as u8)
+        .find(|i| !used.contains(i))
+        .map_or(
+            ListColor::from_index(used.len() as u8),
+            ListColor::from_index,
+        )
+}
+
+/// Every color index already claimed by some other list in `list_colors`,
+/// skipping `skip_id` (the list a fresh assignment is being computed for —
+/// irrelevant for `apply_add_list`, which hasn't inserted anything yet, but
+/// `bootstrap_list_colors` shares this helper while looping over several
+/// lists at once and must not let an already-visited list's slot collide
+/// with itself).
+fn used_list_colors(
+    list_colors: &LoroMap,
+    ids: &[String],
+    skip_id: &str,
+) -> std::collections::HashSet<u8> {
+    ids.iter()
+        .filter(|id| id.as_str() != skip_id)
+        .filter_map(|id| {
+            list_colors
+                .get(id)
+                .and_then(|v| as_i64(&v.get_deep_value()))
+        })
+        .map(|n| n as u8)
+        .collect()
+}
+
+/// Assigns a persisted color to any list that doesn't have one yet — lists
+/// created before this field existed, or the fixed-id default list (created
+/// by [`bootstrap_default_list`] directly, not through `apply_add_list`,
+/// which is the only other place a color gets assigned). Idempotent and
+/// safe to call on every open, same as `bootstrap_default_list`; must run
+/// after it for the same before-`UndoManager`-attaches reason. Walks
+/// `list_order` so iteration order — and therefore which list gets which
+/// leftover slot when more than one is missing — is deterministic.
+fn bootstrap_list_colors(doc: &LoroDoc) -> Result<(), CoreError> {
+    let list_order = doc.get_movable_list("list_order");
+    let list_colors = doc.get_map("list_colors");
+    let ids = dedup_list_order_ids(&list_order);
+
+    let missing: Vec<&String> = ids
+        .iter()
+        .filter(|id| list_colors.get(id.as_str()).is_none())
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    for id in missing {
+        let used = used_list_colors(&list_colors, &ids, id);
+        let color = next_free_list_color(&used);
+        list_colors
+            .insert(id.as_str(), i64::from(color.to_index()))
+            .map_err(doc_err)?;
+    }
     doc.commit();
     Ok(())
 }
@@ -189,6 +277,7 @@ impl Doc {
         // undoable, or a user's very first `Undo` on a brand new install
         // would delete the only list that exists.
         bootstrap_default_list(&doc)?;
+        bootstrap_list_colors(&doc)?;
         let undo = UndoManager::new(&doc);
         Ok(Self {
             doc,
@@ -204,9 +293,10 @@ impl Doc {
         doc.set_change_merge_interval(0);
         doc.import(snapshot).map_err(doc_err)?;
         // Same reasoning as `new`: run before `UndoManager` attaches. Also
-        // doubles as the migration path for docs written before lists
-        // existed — see the module doc comment.
+        // doubles as the migration path for docs written before lists (or
+        // list colors) existed — see the module doc comment.
         bootstrap_default_list(&doc)?;
+        bootstrap_list_colors(&doc)?;
         let undo = UndoManager::new(&doc);
         Ok(Self {
             doc,
@@ -217,7 +307,7 @@ impl Doc {
     }
 
     /// Sets the local UTC offset (seconds) used by `read()` to compute
-    /// "today" for `due_label`/`overdue`. Not a CRDT mutation — no commit,
+    /// "today" for `due_label`/`due_state`. Not a CRDT mutation — no commit,
     /// no `revision` bump; the caller (`App`) is responsible for notifying
     /// subscribers itself, since a fresh snapshot with corrected labels is
     /// worth pushing even though the document's content didn't change.
@@ -336,17 +426,28 @@ impl Doc {
         let tasks = self.doc.get_map("tasks");
         let order = self.doc.get_movable_list("order");
         let lists_map = self.doc.get_map("lists");
+        let list_colors = self.doc.get_map("list_colors");
 
-        let list_rows: Vec<ListRow> = dedup_list_order_ids(&self.doc.get_movable_list("list_order"))
-            .into_iter()
-            .map(|id| {
-                let name = lists_map
-                    .get(&id)
-                    .and_then(|v| as_string(&v.get_deep_value()))
-                    .unwrap_or_default();
-                ListRow { id, name }
-            })
-            .collect();
+        let list_rows: Vec<ListRow> =
+            dedup_list_order_ids(&self.doc.get_movable_list("list_order"))
+                .into_iter()
+                .map(|id| {
+                    let name = lists_map
+                        .get(&id)
+                        .and_then(|v| as_string(&v.get_deep_value()))
+                        .unwrap_or_default();
+                    // Always present by the time `read()` can run — see
+                    // `bootstrap_list_colors` — but defaults defensively rather
+                    // than panicking if a value is ever missing or wrong-typed,
+                    // same posture `task_list_id` takes toward `list_id`.
+                    let color = list_colors
+                        .get(&id)
+                        .and_then(|v| as_i64(&v.get_deep_value()))
+                        .map(|n| ListColor::from_index(n as u8))
+                        .unwrap_or_default();
+                    ListRow { id, name, color }
+                })
+                .collect();
 
         let mut rows = Vec::new();
         let mut active_count = 0u32;
@@ -387,7 +488,9 @@ impl Doc {
                 done,
                 due,
                 due_label: due.map(|d| due_label(d, now, self.local_offset_seconds)),
-                overdue: due.is_some_and(|d| is_overdue(d, now, self.local_offset_seconds)),
+                due_state: due
+                    .map(|d| due_state(d, now, self.local_offset_seconds))
+                    .unwrap_or(DueState::None),
                 list_id,
                 list_name,
             });
@@ -598,6 +701,15 @@ impl Doc {
             .get_map("lists")
             .insert(&id, trimmed)
             .map_err(doc_err)?;
+
+        let list_colors = self.doc.get_map("list_colors");
+        let existing_ids = dedup_list_order_ids(&list_order);
+        let used = used_list_colors(&list_colors, &existing_ids, &id);
+        let color = next_free_list_color(&used);
+        list_colors
+            .insert(&id, i64::from(color.to_index()))
+            .map_err(doc_err)?;
+
         list_order.insert(pos, id).map_err(doc_err)?;
 
         self.doc.commit();
@@ -679,6 +791,12 @@ impl Doc {
             list_order.delete(idx, 1).map_err(doc_err)?;
         }
         lists.delete(id).map_err(doc_err)?;
+        // Frees the slot for reuse by a future list rather than leaving it
+        // permanently claimed by a list that no longer exists.
+        self.doc
+            .get_map("list_colors")
+            .delete(id)
+            .map_err(doc_err)?;
 
         self.doc.commit();
         self.revision += 1;
@@ -823,10 +941,14 @@ mod tests {
             &ids,
         )
         .unwrap();
-        let work = doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0)).lists[0]
+        let work = doc
+            .read(ViewFilter::All, ListFilter::All, &FixedClock(0))
+            .lists[0]
             .id
             .clone();
-        let a = doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0)).rows[0]
+        let a = doc
+            .read(ViewFilter::All, ListFilter::All, &FixedClock(0))
+            .rows[0]
             .id
             .clone();
 
@@ -845,6 +967,148 @@ mod tests {
         let snap = doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0));
         assert_eq!(snap.rows[0].id, a);
         assert_eq!(snap.rows[0].list_id, work);
+    }
+
+    #[test]
+    fn add_list_assigns_each_list_a_distinct_color_up_to_the_palette_size() {
+        let mut doc = Doc::new(1).unwrap();
+        let ids = crate::clock::SeqIdSource::new();
+        // The bootstrap default list ("Tasks") already claimed one slot, so
+        // 8 more fills the remaining 8 of 9 without any collision.
+        for name in ["Bekk", "DA", "Privat", "A", "B", "C", "D", "E"] {
+            doc.apply(
+                Command::AddList {
+                    name: name.to_string(),
+                    after: None,
+                },
+                &FixedClock(0),
+                &ids,
+            )
+            .unwrap();
+        }
+
+        let snap = doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0));
+        assert_eq!(snap.lists.len(), 9);
+        let colors: std::collections::HashSet<ListColor> =
+            snap.lists.iter().map(|l| l.color).collect();
+        assert_eq!(colors.len(), 9, "every list must get a distinct color");
+    }
+
+    #[test]
+    fn add_list_reuses_a_color_once_the_palette_is_exhausted() {
+        let mut doc = Doc::new(1).unwrap();
+        let ids = crate::clock::SeqIdSource::new();
+        for name in ["Bekk", "DA", "Privat", "A", "B", "C", "D", "E", "Tenth"] {
+            doc.apply(
+                Command::AddList {
+                    name: name.to_string(),
+                    after: None,
+                },
+                &FixedClock(0),
+                &ids,
+            )
+            .unwrap();
+        }
+
+        let snap = doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0));
+        assert_eq!(snap.lists.len(), 10);
+        // The 10th list (index 9 in creation order, right after the
+        // bootstrap default list) has nowhere new to go — same color as the
+        // first, by `next_free_list_color`'s documented wrap-around.
+        assert_eq!(snap.lists[0].color, snap.lists[9].color);
+    }
+
+    #[test]
+    fn delete_list_frees_its_color_for_reuse() {
+        let mut doc = Doc::new(1).unwrap();
+        let ids = crate::clock::SeqIdSource::new();
+        doc.apply(
+            Command::AddList {
+                name: "Work".to_string(),
+                after: None,
+            },
+            &FixedClock(0),
+            &ids,
+        )
+        .unwrap();
+        // `after: None` inserts at the top (see `insert_position`), so
+        // "Work" is lists[0] and the bootstrap default list is lists[1].
+        let before = doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0));
+        let work_id = before.lists[0].id.clone();
+        let work_color = before.lists[0].color;
+
+        doc.apply(Command::DeleteList { id: work_id }, &FixedClock(0), &ids)
+            .unwrap();
+        doc.apply(
+            Command::AddList {
+                name: "Replacement".to_string(),
+                after: None,
+            },
+            &FixedClock(0),
+            &ids,
+        )
+        .unwrap();
+
+        let snap = doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0));
+        assert_eq!(snap.lists.len(), 2);
+        assert_eq!(snap.lists[0].color, work_color);
+    }
+
+    #[test]
+    fn deleting_the_default_list_does_not_resurrect_it_on_reload() {
+        let mut doc = Doc::new(1).unwrap();
+        let ids = crate::clock::SeqIdSource::new();
+        doc.apply(
+            Command::AddList {
+                name: "Work".to_string(),
+                after: None,
+            },
+            &FixedClock(0),
+            &ids,
+        )
+        .unwrap();
+        doc.apply(
+            Command::DeleteList {
+                id: DEFAULT_LIST_ID.to_string(),
+            },
+            &FixedClock(0),
+            &ids,
+        )
+        .unwrap();
+
+        let snapshot = doc.export_snapshot().unwrap();
+        let reloaded = Doc::load(2, &snapshot).unwrap();
+        let snap = reloaded.read(ViewFilter::All, ListFilter::All, &FixedClock(0));
+
+        assert_eq!(snap.lists.len(), 1);
+        assert_eq!(snap.lists[0].name, "Work");
+        assert!(snap.lists.iter().all(|l| l.id != DEFAULT_LIST_ID));
+    }
+
+    #[test]
+    fn bootstrap_backfills_colors_for_lists_written_before_the_field_existed() {
+        // Simulate data written before `list_colors` existed: two lists
+        // present in `lists`/`list_order`, built below the `apply`/`Command`
+        // layer the same way `bootstrap_backfills_pre_lists_tasks_into_the_default_list`
+        // simulates pre-lists data. Uses `DEFAULT_LIST_ID` for one of them so
+        // `bootstrap_default_list` is a no-op here too, matching what real
+        // pre-`list_colors` history actually looks like (lists already
+        // existed; only the color map is new).
+        let pre_colors_doc = LoroDoc::new();
+        pre_colors_doc.set_peer_id(1).unwrap();
+        let lists = pre_colors_doc.get_map("lists");
+        lists.insert(DEFAULT_LIST_ID, DEFAULT_LIST_NAME).unwrap();
+        lists.insert("b", "Beta").unwrap();
+        let list_order = pre_colors_doc.get_movable_list("list_order");
+        list_order.insert(0, DEFAULT_LIST_ID).unwrap();
+        list_order.insert(1, "b").unwrap();
+        pre_colors_doc.commit();
+        let snapshot = pre_colors_doc.export(ExportMode::snapshot()).unwrap();
+
+        let doc = Doc::load(2, &snapshot).unwrap();
+        let snap = doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0));
+        assert_eq!(snap.lists.len(), 2);
+        assert_ne!(snap.lists[0].color, snap.lists[1].color);
     }
 
     #[test]
@@ -1086,7 +1350,9 @@ mod tests {
             &crate::clock::SeqIdSource::new(),
         )
         .unwrap();
-        let row = &doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0)).rows[0];
+        let row = &doc
+            .read(ViewFilter::All, ListFilter::All, &FixedClock(0))
+            .rows[0];
         assert_eq!(row.due, Some(1_000));
     }
 
@@ -1104,7 +1370,9 @@ mod tests {
             &crate::clock::SeqIdSource::new(),
         )
         .unwrap();
-        let row = &doc.read(ViewFilter::All, ListFilter::All, &FixedClock(0)).rows[0];
+        let row = &doc
+            .read(ViewFilter::All, ListFilter::All, &FixedClock(0))
+            .rows[0];
         assert_eq!(row.due, None);
     }
 
@@ -1135,7 +1403,7 @@ mod tests {
         )
         .unwrap();
         let before = doc.read(ViewFilter::All, ListFilter::All, &clock);
-        assert!(!before.rows[0].overdue);
+        assert_eq!(before.rows[0].due_state, DueState::Today);
 
         // UTC+12: "now" (13:00 UTC) is already 1970-01-02 01:00 local — a
         // full local day past `due`, which is still 1970-01-01 12:00 local
@@ -1144,7 +1412,7 @@ mod tests {
         let revision_before = before.revision;
         doc.set_local_offset_seconds(12 * 3_600);
         let after = doc.read(ViewFilter::All, ListFilter::All, &clock);
-        assert!(after.rows[0].overdue);
+        assert_eq!(after.rows[0].due_state, DueState::Overdue);
         assert_eq!(after.revision, revision_before);
     }
 }

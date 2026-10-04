@@ -187,6 +187,13 @@ struct CaptureView: SwiftUI.View {
             }
         }
         .frame(width: PanelMetrics.width)
+        // `SpotlightPanel`'s `.hudWindow` material always renders dark,
+        // regardless of the system's actual light/dark setting -- without
+        // this, `.primary`/`.secondary`/`accentColor` would keep following
+        // system appearance and render light-mode (dark) text on that
+        // always-dark background in Light Mode, a real contrast bug rather
+        // than just a styling choice.
+        .preferredColorScheme(.dark)
         .onExitCommand(perform: onDismiss)
         .onAppear {
             focus = .input
@@ -676,7 +683,15 @@ private struct ListPillRow: SwiftUI.View {
 
     var body: some SwiftUI.View {
         FlowLayout(spacing: 6) {
-            pill(label: "All", shortcutDigit: 0, isSelected: isAll, showsCaptureDot: false, isBlinking: false) {
+            pill(
+                label: "All",
+                shortcutDigit: 0,
+                isSelected: isAll,
+                showsCaptureDot: false,
+                isBlinking: false,
+                color: .accentColor,
+                textColor: readableTextColor(on: .accentColor)
+            ) {
                 model.setCurrentList(.all)
             }
             ForEach(Array((model.snapshot?.lists ?? []).enumerated()), id: \.element.id) { index, list in
@@ -689,7 +704,9 @@ private struct ListPillRow: SwiftUI.View {
                     shortcutDigit: index < 9 ? index + 1 : nil,
                     isSelected: isSelected(list.id),
                     showsCaptureDot: isAll && model.snapshot?.captureListId == list.id,
-                    isBlinking: list.id == blinkingListID
+                    isBlinking: list.id == blinkingListID,
+                    color: color(for: list.color),
+                    textColor: pillTextColor(for: list.color)
                 ) {
                     model.setCurrentList(.list(id: list.id))
                 }
@@ -717,6 +734,23 @@ private struct ListPillRow: SwiftUI.View {
         return current == id
     }
 
+    /// `color` is this pill's identity hue (a real list's `ListColor`, or
+    /// `.accentColor` for "All" -- every pill has one now, there's no more
+    /// neutral/colorless case). `textColor` is what the solid-fill states
+    /// below use, since hue-matched text on a hue-matched fill reads as
+    /// low-contrast no matter how the opacity is tuned -- callers pass
+    /// `pillTextColor(for:)` for a real list, or `readableTextColor(on:)` for
+    /// `.accentColor`, which isn't one of the 9 fixed `ListColor` cases and
+    /// can't be hardcoded (it's the user's macOS system accent color).
+    ///
+    /// Resting and selected are no longer the same hue at different
+    /// opacities: resting is an outline on a clear fill (hue-on-near-neutral,
+    /// same pattern `DueColor` chips already use successfully), selected
+    /// flips to a solid fill. `isBlinking` forces the solid fill even over a
+    /// merely-resting pill, plus an extra white ring, so it stays the single
+    /// most intense tier above selected -- the flash is a momentary
+    /// "something just landed here" signal and needs to read as such even on
+    /// the pill you're currently viewing.
     @ViewBuilder
     private func pill(
         label: String,
@@ -724,41 +758,59 @@ private struct ListPillRow: SwiftUI.View {
         isSelected: Bool,
         showsCaptureDot: Bool,
         isBlinking: Bool,
+        color: Color,
+        textColor: Color,
         action: @escaping () -> Void
     ) -> some SwiftUI.View {
+        let solid = isSelected || isBlinking
+        let foreground = solid ? textColor : color
+
         Button(action: action) {
             HStack(spacing: 4) {
                 if let shortcutDigit {
                     Text("⌘\(shortcutDigit)")
                         .font(.system(size: 10, weight: .medium, design: .rounded))
-                        .foregroundStyle(.secondary.opacity(0.7))
+                        .foregroundStyle(foreground.opacity(0.7))
                 }
                 Text(label)
                     .font(.system(size: 12, weight: .medium))
                 if showsCaptureDot {
                     Circle()
-                        .fill(Color.accentColor)
+                        .fill(color)
                         .frame(width: 5, height: 5)
                 }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .background(
-                // `isBlinking` wins over `isSelected` -- the flash is a
-                // momentary "something just landed here" signal and should
-                // read as such even on the pill you're currently viewing.
-                isBlinking
-                    ? Color.accentColor.opacity(0.4)
-                    : (isSelected ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.1)),
-                in: Capsule()
-            )
-            .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+            .background(solid ? color : Color.clear, in: Capsule())
+            .overlay {
+                if isBlinking {
+                    Capsule().strokeBorder(Color.white.opacity(0.9), lineWidth: 2)
+                } else if !solid {
+                    Capsule().strokeBorder(color, lineWidth: 1)
+                }
+            }
+            .foregroundStyle(foreground)
         }
         .buttonStyle(.plain)
         // Click/⌘-shortcut only, like the old Menu-based switcher -- not
         // part of the alt+j/alt+k row-focus chain or Tab order.
         .focusable(false)
     }
+}
+
+/// Readable text color for a solid pill fill whose color isn't one of the 9
+/// fixed `ListColor` cases -- i.e. `.accentColor`, which is a user-level
+/// macOS System Settings choice (blue, graphite, yellow, ...) and so can't be
+/// hardcoded the way `pillTextColor(for:)` hardcodes the known `ListColor`
+/// set. AppKit-only (`NSColor`), which is why this lives here rather than
+/// alongside `pillTextColor(for:)` in the cross-platform `TodoKit`.
+private func readableTextColor(on color: Color) -> Color {
+    let rgb = NSColor(color).usingColorSpace(.deviceRGB) ?? NSColor(color)
+    var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0
+    rgb.getRed(&r, green: &g, blue: &b, alpha: nil)
+    let luminance = 0.299 * r + 0.587 * g + 0.114 * b
+    return luminance > 0.6 ? .black : .white
 }
 
 /// Left-to-right, top-to-bottom wrapping layout -- SwiftUI has no built-in
@@ -862,18 +914,28 @@ private struct CaptureTaskRow: SwiftUI.View {
             Spacer()
 
             if let label = row.dueLabel, !isEditing {
-                // Overdue-red is a call to action; a completed task needs
-                // none, regardless of when it was due.
-                CaptureDueChip(label: label, tint: row.overdue && !completed ? .red : .secondary)
+                CaptureDueChip(label: label, tint: dueChipColor(state: row.dueState, done: completed))
             }
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 8)
-        .background(isFocused ? Color.accentColor.opacity(0.15) : Color.clear)
+        .background(isFocused ? Color.accentColor.opacity(0.25) : Color.clear)
+        .overlay(alignment: .leading) {
+            // A flat background tint alone washes out too easily on this
+            // translucent HUD panel -- the leading bar is what actually
+            // reads at a glance as "keyboard commands act on this row".
+            if isFocused {
+                Rectangle().fill(Color.accentColor).frame(width: 3)
+            }
+        }
         .contentShape(Rectangle())
         .onTapGesture(perform: onFocusRequest)
         .animation(.easeOut(duration: 0.2), value: completed)
-        .opacity(fading ? 0.3 : 1)
+        // Done rows recede further than just their secondary/strikethrough
+        // text color -- fading and completed are mutually exclusive (a row
+        // is never both an overlay-list-move and a completion ghost at
+        // once), so this one modifier can serve both.
+        .opacity(fading ? 0.3 : (completed ? 0.55 : 1))
         // Inert, not just dimmed: it's already gone from the list this
         // panel is showing, so clicking it (toggle, focus, edit) shouldn't
         // do anything until it's fully removed.

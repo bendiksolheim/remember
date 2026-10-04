@@ -1,5 +1,6 @@
 ---
 source: crates/core/tests/snapshots.rs
+assertion_line: 161
 expression: "doc.read(ViewFilter::Active, ListFilter::All, &clock)"
 ---
 rows:
@@ -9,7 +10,7 @@ rows:
     done: false
     due: 604800
     due_label: 8 Jan
-    overdue: true
+    due_state: Overdue
     list_id: default
     list_name: Tasks
   - id: "2"
@@ -18,7 +19,7 @@ rows:
     done: false
     due: 950400
     due_label: Tomorrow
-    overdue: false
+    due_state: Later
     list_id: default
     list_name: Tasks
   - id: "1"
@@ -27,7 +28,7 @@ rows:
     done: false
     due: 864000
     due_label: Today
-    overdue: false
+    due_state: Today
     list_id: default
     list_name: Tasks
   - id: "0"
@@ -36,7 +37,7 @@ rows:
     done: false
     due: ~
     due_label: ~
-    overdue: false
+    due_state: None
     list_id: default
     list_name: Tasks
 view: Active
@@ -45,6 +46,7 @@ capture_list_id: ""
 lists:
   - id: default
     name: Tasks
+    color: Blue
 active_count: 4
 can_undo: true
 can_redo: false

@@ -1,18 +1,22 @@
-use todo_core::{Command, CoreError, Doc, FixedClock, ListFilter, SeqIdSource, ViewFilter};
+use todo_core::{
+    Command, CoreError, Doc, DueState, FixedClock, ListFilter, SeqIdSource, ViewFilter,
+};
 
 fn add(doc: &mut Doc, clock: &FixedClock, ids: &SeqIdSource, title: &str) -> String {
     doc.apply(
         Command::Add {
-                title: title.to_string(),
-                after: None,
-                due: None,
-                list_id: None,
-            },
+            title: title.to_string(),
+            after: None,
+            due: None,
+            list_id: None,
+        },
         clock,
         ids,
     )
     .unwrap();
-    doc.read(ViewFilter::All, ListFilter::All, clock).rows[0].id.clone()
+    doc.read(ViewFilter::All, ListFilter::All, clock).rows[0]
+        .id
+        .clone()
 }
 
 fn titles(snap: &todo_core::Snapshot) -> Vec<String> {
@@ -44,16 +48,19 @@ fn add_after_none_inserts_at_top_after_some_inserts_after() {
     let a = add(&mut doc, &clock, &ids, "a");
     doc.apply(
         Command::Add {
-                title: "b".to_string(),
-                after: Some(a),
-                due: None,
-                list_id: None,
-            },
+            title: "b".to_string(),
+            after: Some(a),
+            due: None,
+            list_id: None,
+        },
         &clock,
         &ids,
     )
     .unwrap();
-    assert_eq!(titles(&doc.read(ViewFilter::All, ListFilter::All, &clock)), vec!["a", "b"]);
+    assert_eq!(
+        titles(&doc.read(ViewFilter::All, ListFilter::All, &clock)),
+        vec!["a", "b"]
+    );
 
     add(&mut doc, &clock, &ids, "c");
     assert_eq!(
@@ -128,7 +135,10 @@ fn set_title_to_current_value_is_noop() {
         &ids,
     )
     .unwrap();
-    assert_eq!(doc.read(ViewFilter::All, ListFilter::All, &clock).revision, before);
+    assert_eq!(
+        doc.read(ViewFilter::All, ListFilter::All, &clock).revision,
+        before
+    );
 }
 
 #[test]
@@ -215,7 +225,10 @@ fn add_trims_surrounding_whitespace() {
     let clock = FixedClock(0);
     let ids = SeqIdSource::new();
     add(&mut doc, &clock, &ids, "  a  ");
-    assert_eq!(titles(&doc.read(ViewFilter::All, ListFilter::All, &clock)), vec!["a"]);
+    assert_eq!(
+        titles(&doc.read(ViewFilter::All, ListFilter::All, &clock)),
+        vec!["a"]
+    );
 }
 
 #[test]
@@ -226,11 +239,11 @@ fn add_empty_after_trim_is_noop() {
     let before = doc.read(ViewFilter::All, ListFilter::All, &clock).revision;
     doc.apply(
         Command::Add {
-                title: "   ".to_string(),
-                after: None,
-                due: None,
-                list_id: None,
-            },
+            title: "   ".to_string(),
+            after: None,
+            due: None,
+            list_id: None,
+        },
         &clock,
         &ids,
     )
@@ -249,7 +262,10 @@ fn set_done_to_current_value_is_noop() {
     let before = doc.read(ViewFilter::All, ListFilter::All, &clock).revision;
     doc.apply(Command::SetDone { id, done: false }, &clock, &ids)
         .unwrap();
-    assert_eq!(doc.read(ViewFilter::All, ListFilter::All, &clock).revision, before);
+    assert_eq!(
+        doc.read(ViewFilter::All, ListFilter::All, &clock).revision,
+        before
+    );
 }
 
 #[test]
@@ -293,7 +309,7 @@ fn set_due_updates_only_due() {
 }
 
 #[test]
-fn set_due_none_clears_date_and_overdue() {
+fn set_due_none_clears_date_and_due_state() {
     let mut doc = Doc::new(1).unwrap();
     let clock = FixedClock(10 * 86_400);
     let ids = SeqIdSource::new();
@@ -308,7 +324,7 @@ fn set_due_none_clears_date_and_overdue() {
     )
     .unwrap();
     let row = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0].clone();
-    assert!(row.overdue);
+    assert_eq!(row.due_state, DueState::Overdue);
 
     doc.apply(
         Command::SetDue {
@@ -322,7 +338,7 @@ fn set_due_none_clears_date_and_overdue() {
     let row = &doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0];
     assert_eq!(row.due, None);
     assert_eq!(row.due_label, None);
-    assert!(!row.overdue);
+    assert_eq!(row.due_state, DueState::None);
 }
 
 #[test]
@@ -396,7 +412,10 @@ fn move_to_first_last_middle_and_own_position_is_noop() {
         &ids,
     )
     .unwrap();
-    assert_eq!(ids_of(&doc.read(ViewFilter::All, ListFilter::All, &clock)), before);
+    assert_eq!(
+        ids_of(&doc.read(ViewFilter::All, ListFilter::All, &clock)),
+        before
+    );
 }
 
 #[test]
@@ -475,7 +494,11 @@ fn set_done_hides_from_active_view_but_not_count() {
     let ids = SeqIdSource::new();
     let a = add(&mut doc, &clock, &ids, "a");
     add(&mut doc, &clock, &ids, "b");
-    assert_eq!(doc.read(ViewFilter::All, ListFilter::All, &clock).active_count, 2);
+    assert_eq!(
+        doc.read(ViewFilter::All, ListFilter::All, &clock)
+            .active_count,
+        2
+    );
 
     doc.apply(
         Command::SetDone {
@@ -523,7 +546,10 @@ fn undo_restores_prior_snapshot_after_each_mutating_command() {
     let empty = ids_of(&doc.read(ViewFilter::All, ListFilter::All, &clock));
     let id = add(&mut doc, &clock, &ids, "a");
     doc.apply(Command::Undo, &clock, &ids).unwrap();
-    assert_eq!(ids_of(&doc.read(ViewFilter::All, ListFilter::All, &clock)), empty);
+    assert_eq!(
+        ids_of(&doc.read(ViewFilter::All, ListFilter::All, &clock)),
+        empty
+    );
 
     doc.apply(Command::Redo, &clock, &ids).unwrap();
     let after_add = doc.read(ViewFilter::All, ListFilter::All, &clock).rows;
@@ -538,7 +564,10 @@ fn undo_restores_prior_snapshot_after_each_mutating_command() {
     )
     .unwrap();
     doc.apply(Command::Undo, &clock, &ids).unwrap();
-    assert_eq!(doc.read(ViewFilter::All, ListFilter::All, &clock).rows, after_add);
+    assert_eq!(
+        doc.read(ViewFilter::All, ListFilter::All, &clock).rows,
+        after_add
+    );
 }
 
 #[test]
@@ -550,10 +579,16 @@ fn redo_after_undo_restores_post_command_snapshot() {
     let after_add = doc.read(ViewFilter::All, ListFilter::All, &clock).rows;
 
     doc.apply(Command::Undo, &clock, &ids).unwrap();
-    assert!(doc.read(ViewFilter::All, ListFilter::All, &clock).rows.is_empty());
+    assert!(doc
+        .read(ViewFilter::All, ListFilter::All, &clock)
+        .rows
+        .is_empty());
 
     doc.apply(Command::Redo, &clock, &ids).unwrap();
-    assert_eq!(doc.read(ViewFilter::All, ListFilter::All, &clock).rows, after_add);
+    assert_eq!(
+        doc.read(ViewFilter::All, ListFilter::All, &clock).rows,
+        after_add
+    );
 }
 
 #[test]
@@ -588,13 +623,15 @@ fn revision_strictly_increases_across_every_mutation() {
     bump(
         &mut doc,
         Command::Add {
-                title: "a".to_string(),
-                after: None,
-                due: None,
-                list_id: None,
-            },
+            title: "a".to_string(),
+            after: None,
+            due: None,
+            list_id: None,
+        },
     );
-    let id = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0].id.clone();
+    let id = doc.read(ViewFilter::All, ListFilter::All, &clock).rows[0]
+        .id
+        .clone();
     bump(
         &mut doc,
         Command::SetTitle {
@@ -605,11 +642,11 @@ fn revision_strictly_increases_across_every_mutation() {
     bump(
         &mut doc,
         Command::Add {
-                title: "c".to_string(),
-                after: None,
-                due: None,
-                list_id: None,
-            },
+            title: "c".to_string(),
+            after: None,
+            due: None,
+            list_id: None,
+        },
     );
     // A real (non-no-op) move: `id` is currently second, this brings it to
     // the front — a mutated `revision += 1` (e.g. `-=`/`*=`) wouldn't be
@@ -809,7 +846,10 @@ fn rename_list_updates_name() {
     )
     .unwrap();
     let snap = doc.read(ViewFilter::All, ListFilter::All, &clock);
-    assert_eq!(snap.lists.iter().find(|l| l.id == work).unwrap().name, "Office");
+    assert_eq!(
+        snap.lists.iter().find(|l| l.id == work).unwrap().name,
+        "Office"
+    );
 }
 
 #[test]
@@ -903,7 +943,13 @@ fn delete_list_unknown_id_is_not_found() {
     let clock = FixedClock(0);
     let ids = SeqIdSource::new();
     let err = doc
-        .apply(Command::DeleteList { id: "nope".to_string() }, &clock, &ids)
+        .apply(
+            Command::DeleteList {
+                id: "nope".to_string(),
+            },
+            &clock,
+            &ids,
+        )
         .unwrap_err();
     assert_eq!(err, CoreError::NotFound("nope".to_string()));
 }
