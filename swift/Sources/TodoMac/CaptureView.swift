@@ -140,7 +140,11 @@ struct CaptureView: SwiftUI.View {
             .padding(.vertical, 16)
 
             Divider()
-            ListPillRow(onOpenListsSettings: onOpenListsSettings, blinkingListID: blinkingListID)
+            ListPillRow(
+                onOpenListsSettings: onOpenListsSettings,
+                blinkingListID: blinkingListID,
+                onSelectList: selectList
+            )
                 .padding(.horizontal, 20)
                 .padding(.vertical, 8)
                 .background(
@@ -237,7 +241,7 @@ struct CaptureView: SwiftUI.View {
                 // inside `ListPillRow`) to keep every global shortcut owned
                 // by this one overlay, same as Undo/Redo/Toggle/Edit above.
                 ForEach(Array((model.snapshot?.lists ?? []).prefix(9).enumerated()), id: \.element.id) { index, list in
-                    Button("Select \(list.name) List") { model.setCurrentList(list.id) }
+                    Button("Select \(list.name) List") { selectList(list.id) }
                         .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
                 }
                 // ⌘⌥1–⌘⌥9: move the focused row into one of the same first
@@ -334,6 +338,18 @@ struct CaptureView: SwiftUI.View {
     private var isRowFocused: Bool {
         if case .row? = focus { return true }
         return false
+    }
+
+    /// Switches the sticky current list (pill click or ⌘1–⌘9) and always
+    /// hands focus to the quick-add field: the row that was focused belonged
+    /// to the old list's row set and can't carry over, so without this,
+    /// SwiftUI's own "the focused view just disappeared" reset would drop
+    /// focus to nil instead of landing somewhere usable -- the quick-add
+    /// field is already where focus lands whenever it was there to begin
+    /// with, so this just makes that the outcome unconditionally.
+    private func selectList(_ listId: String) {
+        model.setCurrentList(listId)
+        focus = .input
     }
 
     /// Keyboard-focus order for alt+j/alt+k: the quick-add field first, then
@@ -677,6 +693,7 @@ private struct ListPillRow: SwiftUI.View {
     @Environment(TodoModel.self) private var model
     var onOpenListsSettings: () -> Void
     var blinkingListID: String?
+    var onSelectList: (String) -> Void
     /// Measured height of a real list pill (see `pill`'s `GeometryReader`
     /// background below), fed into the trailing "+" pill's frame so it's
     /// always exactly as tall as its siblings instead of a guessed constant
@@ -700,7 +717,7 @@ private struct ListPillRow: SwiftUI.View {
                     color: color(for: list.color),
                     textColor: pillTextColor(for: list.color)
                 ) {
-                    model.setCurrentList(list.id)
+                    onSelectList(list.id)
                 }
             }
             Button(action: onOpenListsSettings) {
