@@ -656,6 +656,13 @@ private struct ListPillRow: SwiftUI.View {
     @Environment(TodoModel.self) private var model
     var onOpenListsSettings: () -> Void
     var blinkingListID: String?
+    /// Measured height of a real list pill (see `pill`'s `GeometryReader`
+    /// background below), fed into the trailing "+" pill's frame so it's
+    /// always exactly as tall as its siblings instead of a guessed constant
+    /// that drifts out of sync if the pills' font or padding ever changes.
+    /// Defaulted to a single-line estimate for the (unreachable in practice)
+    /// case of zero lists, where there's nothing to match against anyway.
+    @State private var pillHeight: CGFloat = 24
 
     var body: some SwiftUI.View {
         FlowLayout(spacing: 6) {
@@ -679,11 +686,17 @@ private struct ListPillRow: SwiftUI.View {
                 Image(systemName: "plus")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
-                    .frame(width: 20, height: 20)
+                    // Square frame sized to match a real pill's height
+                    // exactly, so it's round (width == height) and the same
+                    // height as every other pill, never merely close.
+                    .frame(width: pillHeight, height: pillHeight)
                     .background(Color.secondary.opacity(0.12), in: Circle())
             }
             .buttonStyle(.plain)
             .focusable(false)
+        }
+        .onPreferenceChange(ListPillHeightKey.self) { height in
+            if height > 0 { pillHeight = height }
         }
     }
 
@@ -743,6 +756,18 @@ private struct ListPillRow: SwiftUI.View {
         // Click/⌘-shortcut only, like the old Menu-based switcher -- not
         // part of the alt+j/alt+k row-focus chain or Tab order.
         .focusable(false)
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(key: ListPillHeightKey.self, value: geo.size.height)
+            }
+        )
+    }
+}
+
+private struct ListPillHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
