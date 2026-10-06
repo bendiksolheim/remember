@@ -4,50 +4,94 @@ on:
   release:
     types: [published]
 
+# Default to read-only; only the `publish` job gets write access.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  build:
     runs-on: macos-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      zip_name: ${{ steps.package.outputs.zip_name }}
+      sha256: ${{ steps.package.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-
-      - name: Install Rust
-        run: rustup target add aarch64-apple-darwin
-
       - name: Determine version
         id: version
         # For `release` events, GITHUB_REF_NAME is the default branch, not
         # the tag — the tag only comes through github.event.release.tag_name.
-        run: echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+        # Validated before use: it ends up in a checkout ref, file names,
+        # the Cask and a commit message.
         env:
           TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+(\.[0-9]+)*$ ]]; then
+            echo "::error::Release tag must look like v1 or v1.2.3, got: $TAG"
+            exit 1
+          fi
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      # Build exactly what the tag points at, not whatever `main` holds now.
+      # No persisted credentials: build scripts run during `cargo xtask package`.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: refs/tags/v${{ steps.version.outputs.version }}
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup target add aarch64-apple-darwin
 
       - name: cargo xtask package
         id: package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          cargo xtask package --version "${{ steps.version.outputs.version }}" | tee /tmp/package.out
+          cargo xtask package --version "$VERSION" | tee /tmp/package.out
+          zip_path=$(tail -n 2 /tmp/package.out | head -n 1)
           {
-            echo "zip_path=$(tail -n 2 /tmp/package.out | head -n 1)"
+            echo "zip_path=$zip_path"
+            echo "zip_name=$(basename "$zip_path")"
             echo "sha256=$(tail -n 1 /tmp/package.out)"
           } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-zip
+          path: ${{ steps.package.outputs.zip_path }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+      VERSION: ${{ needs.build.outputs.version }}
+      ZIP_NAME: ${{ needs.build.outputs.zip_name }}
+      SHA256: ${{ needs.build.outputs.sha256 }}
+    steps:
+      # The Cask lives on `main`, so check that out (not the tag) to commit to.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-zip
+          path: dist
 
       - name: Upload release asset
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload "${{ github.event.release.tag_name }}" \
-            "${{ steps.package.outputs.zip_path }}" \
-            --clobber
+        run: gh release upload "$TAG" "dist/$ZIP_NAME" --clobber
 
       - name: Update Cask
         run: |
-          sed -i '' \
-            -e "s/^  version \".*\"/  version \"${{ steps.version.outputs.version }}\"/" \
-            -e "s/^  sha256 \".*\"/  sha256 \"${{ steps.package.outputs.sha256 }}\"/" \
+          [[ "$SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::Bad sha256: $SHA256"; exit 1; }
+          sed -i \
+            -e "s/^  version \".*\"/  version \"$VERSION\"/" \
+            -e "s/^  sha256 \".*\"/  sha256 \"$SHA256\"/" \
             Casks/todo.rb
 
       - name: Commit updated Cask
@@ -55,5 +99,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Casks/todo.rb
-          git diff --cached --quiet || git commit -m "Casks/todo.rb: bump to ${{ github.event.release.tag_name }}"
+          git diff --cached --quiet || git commit -m "Casks/todo.rb: bump to $TAG"
           git push origin HEAD:main
