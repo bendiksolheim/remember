@@ -67,7 +67,7 @@ impl HttpTransport {
         Self {
             base_url: base_url.into(),
             anon_key: anon_key.into(),
-            client: reqwest::blocking::Client::new(),
+            client: crate::http_client(),
         }
     }
 }

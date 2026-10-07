@@ -85,7 +85,7 @@ impl AuthClient {
         Self {
             base_url: base_url.into(),
             anon_key: anon_key.into(),
-            client: reqwest::blocking::Client::new(),
+            client: crate::http_client(),
             clock,
         }
     }
@@ -607,5 +607,58 @@ mod tests {
         .unwrap();
 
         assert!(result.is_ok());
+    }
+
+    /// A 307 makes reqwest re-send the POST body, here the password, to the
+    /// redirect target, so redirects must not be followed at all.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_redirect_is_not_followed_and_the_credentials_stay_put() {
+        let elsewhere = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(canned_response()))
+            .expect(0)
+            .mount(&elsewhere)
+            .await;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v1/token"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}/steal", elsewhere.uri())),
+            )
+            .mount(&server)
+            .await;
+
+        let base = server.uri();
+        let result = tokio::task::spawn_blocking(move || {
+            AuthClient::new(base, "anon-key").sign_in("a@example.com", "hunter2")
+        })
+        .await
+        .unwrap();
+
+        assert!(matches!(result, Err(SyncError::Auth(_))));
+    }
+
+    /// Tests run with `https_only` off so they can reach wiremock; this pins
+    /// down that the production client refuses plain http before sending.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_production_client_refuses_plain_http() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(canned_response()))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let base = server.uri();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut auth = AuthClient::new(base, "anon-key");
+            auth.client = crate::build_http_client(true);
+            auth.sign_in("a@example.com", "hunter2")
+        })
+        .await
+        .unwrap();
+
+        assert!(matches!(result, Err(SyncError::Auth(_))));
     }
 }
