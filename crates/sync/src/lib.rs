@@ -9,7 +9,7 @@ mod engine;
 mod transport;
 
 pub use auth::{AuthClient, Session};
-pub use coordinator::{AutoSyncCoordinator, CoordinatorConfig};
+pub use coordinator::{sign_out, AutoSyncCoordinator, CoordinatorConfig};
 pub use engine::{SyncEngine, SyncOutcome};
 pub use transport::{HttpTransport, PulledUpdate, SyncTransport};
 

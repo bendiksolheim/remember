@@ -172,9 +172,9 @@ pub trait SnapshotListener: Send + Sync {
 
 #[derive(uniffi::Object)]
 pub struct App {
-    // `Arc`, not a bare `CoreApp`, so `SyncClient::sync_now` can hand a
-    // cheap clone to its background thread without `App` needing to
-    // outlive it unsafely — see `SyncEngine::sync_now`'s own doc comment.
+    // `Arc`, not a bare `CoreApp`, so `SyncClient::start_auto_sync` can
+    // hand a cheap clone to the coordinator's background thread without
+    // `App` needing to outlive it unsafely.
     inner: Arc<CoreApp>,
 }
 
@@ -275,7 +275,7 @@ pub enum SyncError {
 }
 
 /// Rust calls into Swift's implementation here to report a background
-/// `sync_now` completing — the same `foreign`-only shape as
+/// auto-sync round completing — the same `foreign`-only shape as
 /// `SnapshotListener`.
 #[uniffi::export(foreign)]
 pub trait SyncStatusListener: Send + Sync {
@@ -332,43 +332,6 @@ impl SyncClient {
             .map_err(convert::sync_error_from_core)
     }
 
-    /// Runs a pull-then-push sync round on a background thread; `listener`
-    /// is called back on completion or error. Never blocks the caller —
-    /// see `SyncEngine::sync_now`'s doc comment for why this stays
-    /// synchronous-looking rather than `async` at the FFI boundary.
-    pub fn sync_now(&self, app: Arc<App>, session: Session, listener: Arc<dyn SyncStatusListener>) {
-        let core_app = Arc::clone(&app.inner);
-        let original = convert::session_to_sync(session);
-        let original_for_comparison = original.clone();
-        // Taken now, not inside the callback: `auto_sync` is only ever set
-        // once, by `start_auto_sync`, so this can't go stale.
-        let auto_sync = self
-            .auto_sync
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
-        self.engine
-            .sync_now(core_app, original, move |session, result| {
-                // A rotated session is only reported if the coordinator
-                // adopts it too -- if the user signed out (or in as someone
-                // else) mid-sync, persisting it would undo that. See
-                // `AutoSyncCoordinator::adopt_refreshed`.
-                if session != original_for_comparison
-                    && auto_sync.as_ref().is_none_or(|c| {
-                        c.adopt_refreshed(&original_for_comparison, session.clone())
-                    })
-                {
-                    listener.on_session_refreshed(convert::session_from_sync(session));
-                }
-                match result {
-                    Ok(outcome) => {
-                        listener.on_sync_complete(convert::sync_outcome_from_core(outcome))
-                    }
-                    Err(error) => listener.on_sync_error(convert::sync_error_from_core(error)),
-                }
-            });
-    }
-
     /// Starts the background coordinator that pushes shortly after local
     /// edits settle and falls back to a periodic pull otherwise — see
     /// `AutoSyncCoordinator`'s own doc comment for the full trigger list.
@@ -405,9 +368,26 @@ impl SyncClient {
         }
     }
 
+    /// Signs this device out: pauses auto-sync, and revokes the session at
+    /// Supabase in the background — this device's only, so the user's
+    /// other devices stay signed in. `session` is the caller's persisted
+    /// copy, used if auto-sync has none. Best effort and never blocks:
+    /// offline, the revocation is simply skipped. See `todo_sync::sign_out`.
+    pub fn sign_out(&self, session: Option<Session>) {
+        let guard = self.auto_sync.lock().unwrap_or_else(|p| p.into_inner());
+        todo_sync::sign_out(
+            &self.auth,
+            guard.as_deref(),
+            session.map(convert::session_to_sync),
+        );
+    }
+
     /// Requests an immediate auto-sync attempt — for platform lifecycle
-    /// events (app foreground, the Mac waking from sleep) and right after
-    /// signing in. A no-op if `start_auto_sync` hasn't been called yet.
+    /// events (app foreground, the Mac waking from sleep), right after
+    /// signing in, and "Sync Now", which has no round of its own so the
+    /// session is only ever refreshed in one place. The result arrives
+    /// through `start_auto_sync`'s listener. A no-op if `start_auto_sync`
+    /// hasn't been called yet.
     pub fn sync_soon(&self) {
         let guard = self.auto_sync.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(coordinator) = guard.as_ref() {

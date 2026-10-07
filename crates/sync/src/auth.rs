@@ -6,6 +6,7 @@
 //! see [`AuthClient::ensure_fresh`].
 
 use std::sync::Arc;
+use std::thread::{self, JoinHandle};
 
 use serde::Deserialize;
 use todo_core::Clock;
@@ -16,6 +17,20 @@ use crate::SyncError;
 /// just under the wire doesn't race the server's own clock and get a 401
 /// mid-request instead of a clean proactive refresh.
 const REFRESH_LEEWAY_SECS: i64 = 60;
+
+const REFRESH_PATH: &str = "/auth/v1/token?grant_type=refresh_token";
+
+/// `scope=local` revokes only the session the access token belongs to:
+/// this device's. Supabase's default is `global`, which revokes every
+/// session the user has and so would sign out all their other devices too.
+const LOGOUT_PATH: &str = "/auth/v1/logout?scope=local";
+
+/// The statuses GoTrue uses for an access token whose session no longer exists
+/// (revoked, expired, or never existed) -- as far as signing out is
+/// concerned, that's the same as having revoked it.
+fn is_session_gone(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 401 | 403 | 404)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
@@ -91,7 +106,7 @@ impl AuthClient {
 
     fn refresh(&self, refresh_token: &str) -> Result<Session, SyncError> {
         self.call(
-            "/auth/v1/token?grant_type=refresh_token",
+            REFRESH_PATH,
             serde_json::json!({ "refresh_token": refresh_token }),
         )
     }
@@ -109,15 +124,70 @@ impl AuthClient {
         }
     }
 
+    /// Revokes `session` server-side, and only it: the user's sessions on
+    /// other devices stay valid (see [`LOGOUT_PATH`]). The logout endpoint
+    /// needs a valid access token, so an expired one is refreshed first.
+    ///
+    /// `Ok` also when the session turns out to be already gone (its refresh
+    /// or access token is rejected) -- there's nothing left to revoke. `Err`
+    /// means it may still be valid, e.g. the server was unreachable.
+    pub fn sign_out(&self, session: Session) -> Result<(), SyncError> {
+        let session = if session.needs_refresh(self.clock.now()) {
+            let resp = self.post(
+                REFRESH_PATH,
+                None,
+                Some(serde_json::json!({ "refresh_token": session.refresh_token })),
+            )?;
+            // GoTrue answers a revoked or unknown refresh token with a 400.
+            if resp.status() == reqwest::StatusCode::BAD_REQUEST || is_session_gone(resp.status()) {
+                return Ok(());
+            }
+            self.session_from(resp)?
+        } else {
+            session
+        };
+        let resp = self.post(LOGOUT_PATH, Some(&session.access_token), None)?;
+        if resp.status().is_success() || is_session_gone(resp.status()) {
+            Ok(())
+        } else {
+            Err(SyncError::Auth(format!(
+                "sign-out failed: HTTP {}",
+                resp.status()
+            )))
+        }
+    }
+
+    /// [`Self::sign_out`] on a background thread, so a caller on the UI
+    /// thread never waits for the network. Best effort: the handle is only
+    /// there for tests to wait on.
+    pub fn sign_out_in_background(&self, session: Session) -> JoinHandle<Result<(), SyncError>> {
+        let auth = self.clone();
+        thread::spawn(move || auth.sign_out(session))
+    }
+
     fn call(&self, path: &str, body: serde_json::Value) -> Result<Session, SyncError> {
+        let resp = self.post(path, None, Some(body))?;
+        self.session_from(resp)
+    }
+
+    fn post(
+        &self,
+        path: &str,
+        bearer: Option<&str>,
+        body: Option<serde_json::Value>,
+    ) -> Result<reqwest::blocking::Response, SyncError> {
         let url = format!("{}{path}", self.base_url);
-        let resp = self
-            .client
-            .post(url)
-            .header("apikey", &self.anon_key)
-            .json(&body)
-            .send()
-            .map_err(|e| SyncError::Auth(e.to_string()))?;
+        let mut request = self.client.post(url).header("apikey", &self.anon_key);
+        if let Some(token) = bearer {
+            request = request.bearer_auth(token);
+        }
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        request.send().map_err(|e| SyncError::Auth(e.to_string()))
+    }
+
+    fn session_from(&self, resp: reqwest::blocking::Response) -> Result<Session, SyncError> {
         if !resp.status().is_success() {
             return Err(SyncError::Auth(format!(
                 "auth request failed: HTTP {}",
@@ -141,7 +211,7 @@ impl AuthClient {
 mod tests {
     use super::*;
     use todo_core::FixedClock;
-    use wiremock::matchers::{body_json, header, method, path};
+    use wiremock::matchers::{body_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn session_with_expiry(expires_at: i64) -> Session {
@@ -358,5 +428,184 @@ mod tests {
         .unwrap();
 
         assert!(matches!(result, Err(SyncError::Auth(_))));
+    }
+
+    /// Signs `session` out against `server` with the clock at 0, on a
+    /// blocking thread (the client is `reqwest::blocking`).
+    async fn sign_out(base: String, session: Session) -> Result<(), SyncError> {
+        tokio::task::spawn_blocking(move || {
+            AuthClient::with_clock(base, "anon-key", Arc::new(FixedClock(0))).sign_out(session)
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sign_out_revokes_only_this_devices_session() {
+        let server = MockServer::start().await;
+        // `scope=local` is what keeps the user's other devices signed in --
+        // without it, Supabase defaults to revoking every session.
+        Mock::given(method("POST"))
+            .and(path("/auth/v1/logout"))
+            .and(query_param("scope", "local"))
+            .and(header("apikey", "anon-key"))
+            .and(header("authorization", "Bearer old-access"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let result = sign_out(server.uri(), session_with_expiry(10_000)).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sign_out_refreshes_an_expired_session_and_revokes_it_with_the_new_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v1/token"))
+            .and(query_param("grant_type", "refresh_token"))
+            .and(body_json(
+                serde_json::json!({ "refresh_token": "old-refresh" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(canned_response()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v1/logout"))
+            .and(query_param("scope", "local"))
+            .and(header("authorization", "Bearer access-123"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let result = sign_out(server.uri(), session_with_expiry(-1)).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sign_out_with_a_rejected_refresh_token_is_already_done() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v1/token"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "invalid_grant"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v1/logout"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let result = sign_out(server.uri(), session_with_expiry(-1)).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sign_out_fails_if_the_refresh_fails_for_another_reason() {
+        for response in [
+            ResponseTemplate::new(500),
+            ResponseTemplate::new(200).set_body_string("not json"),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/auth/v1/token"))
+                .respond_with(response)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/auth/v1/logout"))
+                .respond_with(ResponseTemplate::new(204))
+                .expect(0)
+                .mount(&server)
+                .await;
+
+            let result = sign_out(server.uri(), session_with_expiry(-1)).await;
+
+            assert!(matches!(result, Err(SyncError::Auth(_))));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sign_out_of_a_session_the_server_no_longer_knows_is_already_done() {
+        for status in [401, 403, 404] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/auth/v1/logout"))
+                .respond_with(ResponseTemplate::new(status))
+                .mount(&server)
+                .await;
+
+            let result = sign_out(server.uri(), session_with_expiry(10_000)).await;
+
+            assert!(result.is_ok(), "HTTP {status}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sign_out_rejected_for_another_reason_is_an_error() {
+        // 400 included: from the logout endpoint it means *our* request was
+        // wrong (e.g. an unsupported scope), not that the session is gone.
+        for status in [400, 500] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/auth/v1/logout"))
+                .respond_with(ResponseTemplate::new(status))
+                .mount(&server)
+                .await;
+
+            let result = sign_out(server.uri(), session_with_expiry(10_000)).await;
+
+            assert!(matches!(result, Err(SyncError::Auth(_))), "HTTP {status}");
+        }
+    }
+
+    #[test]
+    fn sign_out_with_the_server_unreachable_is_an_error() {
+        // Port 1 on loopback: refused immediately, no DNS or timeout involved.
+        let auth =
+            AuthClient::with_clock("http://127.0.0.1:1", "anon-key", Arc::new(FixedClock(0)));
+
+        // Fresh (straight to logout) and expired (fails at the refresh).
+        for expires_at in [10_000, -1] {
+            let result = auth.sign_out(session_with_expiry(expires_at));
+
+            assert!(
+                matches!(result, Err(SyncError::Auth(_))),
+                "expires_at {expires_at}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sign_out_in_background_revokes_the_session() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v1/logout"))
+            .and(query_param("scope", "local"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let base = server.uri();
+        let result = tokio::task::spawn_blocking(move || {
+            AuthClient::with_clock(base, "anon-key", Arc::new(FixedClock(0)))
+                .sign_out_in_background(session_with_expiry(10_000))
+                .join()
+                .unwrap()
+        })
+        .await
+        .unwrap();
+
+        assert!(result.is_ok());
     }
 }

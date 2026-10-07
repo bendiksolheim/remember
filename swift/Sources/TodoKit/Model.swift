@@ -25,10 +25,10 @@ public final class TodoModel {
     // `nil` when no Supabase project is configured — sync is opt-in, so the
     // app must work fully with no backend wired up at all.
     private let syncClient: SyncClient?
-    // Kept alive for the lifetime of `TodoModel`, not created fresh per
-    // call like `syncNow`'s: `startAutoSync` is only ever called once, so
-    // this is the one listener its coordinator reports through for as long
-    // as the app runs.
+    // Kept alive for the lifetime of `TodoModel`: `startAutoSync` is only
+    // ever called once, so this is the one listener its coordinator reports
+    // through -- every round, "Sync Now" included -- for as long as the app
+    // runs.
     private var autoSyncBridge: SyncStatusBridge?
 
     public init(
@@ -59,10 +59,16 @@ public final class TodoModel {
         if let syncClient {
             let autoSyncBridge = SyncStatusBridge(
                 onComplete: { [weak self] _ in
-                    Task { @MainActor in self?.lastSyncError = nil }
+                    Task { @MainActor in
+                        self?.isSyncing = false
+                        self?.lastSyncError = nil
+                    }
                 },
                 onError: { [weak self] error in
-                    Task { @MainActor in self?.lastSyncError = "\(error)" }
+                    Task { @MainActor in
+                        self?.isSyncing = false
+                        self?.lastSyncError = "\(error)"
+                    }
                 },
                 onSessionRefreshed: { [weak self] session in
                     Task { @MainActor in self?.persistRefreshed(session) }
@@ -115,8 +121,8 @@ public final class TodoModel {
     }
 
     /// `async`, not a plain blocking call: `SyncClient.signUp`/`signIn` are
-    /// synchronous `reqwest::blocking` calls under the hood — unlike
-    /// `syncNow`, nothing on the Rust side moves them off-thread, so this
+    /// synchronous `reqwest::blocking` calls under the hood — unlike sync
+    /// rounds, nothing on the Rust side moves them off-thread, so this
     /// hops to a detached task itself rather than freezing the caller (a
     /// button action, in practice) for the network round-trip.
     public func signUp(email: String, password: String) async throws {
@@ -148,15 +154,21 @@ public final class TodoModel {
         syncClient.syncSoon()
     }
 
-    /// Deliberately local-only: local data is kept exactly as is, this just
-    /// forgets the credential so syncing stops until signed in again. If a
-    /// *different* account signs in next, its first sync round resets local
-    /// data (`App::bind_sync_account` on the Rust side), so the two
-    /// accounts' todos never mix.
+    /// Local data is kept exactly as is; this forgets the credential so
+    /// syncing stops until signed in again, and asks Rust to revoke this
+    /// device's session at Supabase (best effort, in the background — other
+    /// devices stay signed in). The local part happens first and never
+    /// depends on the network. If a *different* account signs in next, its
+    /// first sync round resets local data (`App::bind_sync_account` on the
+    /// Rust side), so the two accounts' todos never mix.
     public func signOut() {
+        let session = loadSession()
         KeychainStore.delete()
         isSignedIn = false
-        syncClient?.setSyncToken(session: nil)
+        // A round in flight may be abandoned without reporting a result, so
+        // nothing else would clear this.
+        isSyncing = false
+        syncClient?.signOut(session: session)
     }
 
     /// Requests an immediate auto-sync attempt, bypassing the normal
@@ -167,25 +179,16 @@ public final class TodoModel {
         syncClient?.syncSoon()
     }
 
+    /// Asks auto-sync for a round right away rather than running one of its
+    /// own: auto-sync owns the session, and a second round refreshing from
+    /// the Keychain copy would fight it over Supabase's refresh-token
+    /// rotation. `isSyncing` clears when the next round finishes -- which
+    /// may be one already in flight; the requested one then follows it.
     public func syncNow() {
-        guard let syncClient, let session = loadSession() else { return }
+        guard let syncClient, isSignedIn else { return }
         isSyncing = true
         lastSyncError = nil
-        let statusBridge = SyncStatusBridge(
-            onComplete: { [weak self] _ in
-                Task { @MainActor in self?.isSyncing = false }
-            },
-            onError: { [weak self] error in
-                Task { @MainActor in
-                    self?.isSyncing = false
-                    self?.lastSyncError = "\(error)"
-                }
-            },
-            onSessionRefreshed: { [weak self] session in
-                Task { @MainActor in self?.persistRefreshed(session) }
-            }
-        )
-        syncClient.syncNow(app: app, session: session, listener: statusBridge)
+        syncClient.syncSoon()
     }
 
     private func persist(_ session: Session) {
