@@ -334,7 +334,7 @@ mod tests {
         );
 
         thread::sleep(Duration::from_millis(300)); // well past debounce + periodic
-        assert!(transport.pull("tok", None).unwrap().is_empty());
+        assert!(transport.log_rows().is_empty());
         drop(coordinator);
     }
 
@@ -352,7 +352,7 @@ mod tests {
 
         add(&app, "local task");
         thread::sleep(Duration::from_millis(150)); // > debounce, < periodic
-        assert_eq!(transport.pull("tok", None).unwrap().len(), 1);
+        assert_eq!(transport.log_rows().len(), 1);
         drop(coordinator);
     }
 
@@ -427,7 +427,7 @@ mod tests {
         add(&app, "local task");
         coordinator.sync_soon();
         thread::sleep(Duration::from_millis(20)); // well under the 40ms debounce
-        assert_eq!(transport.pull("tok", None).unwrap().len(), 1);
+        assert_eq!(transport.log_rows().len(), 1);
         drop(coordinator);
     }
 
@@ -447,7 +447,7 @@ mod tests {
         add(&app, "local task");
         coordinator.sync_soon();
         thread::sleep(Duration::from_millis(150));
-        assert!(transport.pull("tok", None).unwrap().is_empty());
+        assert!(transport.log_rows().is_empty());
         drop(coordinator);
     }
 
@@ -490,7 +490,7 @@ mod tests {
         // only past the default 200ms poll interval.
         coordinator.sync_soon();
         thread::sleep(Duration::from_millis(400));
-        assert_eq!(transport.pull("tok", None).unwrap().len(), 1);
+        assert_eq!(transport.log_rows().len(), 1);
         drop(coordinator);
     }
 
@@ -537,11 +537,15 @@ mod tests {
             Ok(())
         }
 
-        fn pull(&self, token: &str, _: Option<i64>) -> Result<Vec<crate::PulledUpdate>, SyncError> {
+        fn pull(&self, token: &str, _: Option<i64>) -> Result<crate::PullPage, SyncError> {
             lock(&self.tokens).push(token.to_string());
             let _ = lock(&self.started).send(());
             thread::sleep(self.stall);
-            Ok(vec![])
+            Ok(crate::PullPage::default())
+        }
+
+        fn compact(&self, _: &str, _: i64, _: Vec<u8>) -> Result<bool, SyncError> {
+            unreachable!("an empty log is never compacted")
         }
     }
 
@@ -730,8 +734,11 @@ mod tests {
         fn push(&self, _: &str, _: u64, _: Vec<u8>) -> Result<(), SyncError> {
             Ok(())
         }
-        fn pull(&self, _: &str, _: Option<i64>) -> Result<Vec<crate::PulledUpdate>, SyncError> {
+        fn pull(&self, _: &str, _: Option<i64>) -> Result<crate::PullPage, SyncError> {
             Err(SyncError::Transport("boom".to_string()))
+        }
+        fn compact(&self, _: &str, _: i64, _: Vec<u8>) -> Result<bool, SyncError> {
+            unreachable!("compact after a failed pull")
         }
     }
 
@@ -844,7 +851,7 @@ mod tests {
 
         coordinator.sync_soon();
         thread::sleep(Duration::from_millis(100));
-        assert!(transport.pull("tok", None).unwrap().is_empty());
+        assert!(transport.log_rows().is_empty());
         drop(coordinator);
     }
 

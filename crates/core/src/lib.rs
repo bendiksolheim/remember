@@ -367,6 +367,15 @@ impl App {
         lock(&self.shared.state).doc.export_since(since.as_deref())
     }
 
+    /// The full document — current state plus its whole history — for the
+    /// server to keep in place of the log rows it subsumes. Importing it
+    /// (via [`App::import_from_pull`]) is equivalent to importing every
+    /// update it contains, so a device that already has some of that
+    /// history, or edits of its own the snapshot lacks, just merges it.
+    pub fn export_for_compaction(&self) -> Result<Vec<u8>, CoreError> {
+        lock(&self.shared.state).doc.export_snapshot()
+    }
+
     /// Records the current version vector as "already pushed". Call only
     /// after the sync transport confirms the bytes from
     /// [`App::export_for_push`] were accepted.

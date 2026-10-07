@@ -8,7 +8,7 @@ across devices.
 ## 1. Create a project
 
 1. [supabase.com](https://supabase.com) → New project. Free tier is enough
-   for personal use — this schema is one small table plus auth, nothing that
+   for personal use — this schema is two small tables plus auth, nothing that
    needs a paid plan.
 2. Pick a region close to you; it doesn't matter functionally, only for
    latency.
@@ -16,12 +16,29 @@ across devices.
 ## 2. Apply the schema
 
 SQL Editor → New query → paste the contents of [`schema.sql`](schema.sql) →
-Run. It creates `sync_log` (the append-only update-blob log) and
-`sync_snapshots` (for devices joining late — see the comments in the file
-for why), with row-level security scoping every row to `auth.uid()`.
+Run. It creates `sync_log` (the append-only update-blob log),
+`sync_snapshots` (one full-document snapshot per account that replaces the
+log rows it covers), and the `sync_push`/`sync_pull`/`sync_compact`
+functions clients call instead of touching the tables. See the comments in
+the file for why.
 
 Re-running it is safe (every statement is `if not exists`/`or replace`
 guarded) if the schema ever needs to change and you want to reapply.
+
+Then paste and run [`lockdown.sql`](lockdown.sql), which revokes direct
+table access from clients. On a project that already has devices syncing,
+update the app on **every** device first: an older app reads `sync_log`
+directly and silently misses rows once compaction deletes them. With the
+lockdown in place it gets an HTTP error instead.
+
+### Testing the schema
+
+`cargo xtask pgtest` (macOS, needs Apple's `container` CLI with
+`container system start` done) runs `crates/sql-tests` against a throwaway
+`postgres:17` container. It applies [`test/supabase_shim.sql`](test/supabase_shim.sql)
+(a stand-in for Supabase's `auth.uid()` and client roles), then
+`schema.sql` twice and `lockdown.sql`, runs the tests, and removes the
+container.
 
 ## 3. Enable auth providers
 
@@ -76,17 +93,21 @@ sync right now, deliberately minimal.
 
 ## Notes for later
 
-- **Compaction**: `sync_snapshots` exists in the schema but nothing writes
-  to it yet — no scheduled job folds old `sync_log` rows into a snapshot.
-  Fine to leave until the log is actually large enough to matter for a
-  late-joining device.
+- **Compaction**: clients do it. After a round that finds more than 200 log
+  rows past the snapshot, the device uploads its whole document as the new
+  snapshot and the rows it covers are deleted (`SyncEngine::compact`), so
+  every account stays at one snapshot plus a short tail. The snapshot keeps
+  the full Loro history, so it grows with how much an account has ever
+  done (roughly 0.2 KB per task ever created), not with time or sync
+  frequency.
 - **Encryption**: the server can read task content in plaintext (see the
   design discussion this schema came out of) — deliberate for v1, not an
   oversight.
-- **This has never been tested against a real project** — the Rust side
-  (`crates/sync`) is tested against a local mock HTTP server
-  (`wiremock`), not this actual schema. The first real run against a live
-  Supabase project is the thing most likely to surface a mismatch (e.g. in
-  how `bytea` round-trips through PostgREST's JSON encoding) — see
+- **Not tested end to end** — the SQL is tested against real Postgres
+  (`cargo xtask pgtest`) and the Rust side (`crates/sync`) against a local
+  mock HTTP server (`wiremock`), but never the two together through
+  PostgREST. The first run of the `sync_*` functions against a live project
+  is the thing most likely to surface a mismatch (e.g. in how `bytea`
+  arguments and `jsonb` results round-trip through PostgREST) — see
   `crates/sync/src/transport.rs`'s hex-encoding comments if push/pull ever
   errors in a way that looks like a payload-encoding problem.

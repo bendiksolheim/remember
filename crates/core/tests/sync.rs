@@ -331,3 +331,53 @@ fn a_failed_sync_account_reset_leaves_the_previous_account_intact() {
     assert_eq!(app.sync_account().unwrap().as_deref(), Some("user-a"));
     assert_eq!(app.last_pulled_seq().unwrap(), Some(7));
 }
+
+fn titles(app: &App) -> Vec<String> {
+    let mut titles: Vec<String> = app.current().rows.into_iter().map(|r| r.title).collect();
+    titles.sort();
+    titles
+}
+
+#[test]
+fn a_compaction_snapshot_rebuilds_the_document_on_a_fresh_device() {
+    let dir = TempDir::new().unwrap();
+    let source = App::open(&db_path(&dir, "source.sqlite3")).unwrap();
+    add(&source, "one");
+    add(&source, "two");
+
+    let fresh = App::open(&db_path(&dir, "fresh.sqlite3")).unwrap();
+    fresh
+        .import_from_pull(&source.export_for_compaction().unwrap())
+        .unwrap();
+
+    assert_eq!(titles(&fresh), vec!["one".to_string(), "two".to_string()]);
+}
+
+#[test]
+fn a_compaction_snapshot_merges_into_a_device_with_history_and_edits_of_its_own() {
+    let dir = TempDir::new().unwrap();
+    let source = App::open(&db_path(&dir, "source.sqlite3")).unwrap();
+    let lagging = App::open(&db_path(&dir, "lagging.sqlite3")).unwrap();
+    add(&source, "shared");
+    lagging
+        .import_from_pull(&source.export_for_push().unwrap())
+        .unwrap();
+    add(&source, "only in snapshot");
+    add(&lagging, "only on lagging device");
+
+    lagging
+        .import_from_pull(&source.export_for_compaction().unwrap())
+        .unwrap();
+
+    assert_eq!(
+        titles(&lagging),
+        vec![
+            "only in snapshot".to_string(),
+            "only on lagging device".to_string(),
+            "shared".to_string(),
+        ]
+    );
+    // The lagging device's own edit survives the import and is still
+    // pending, so the next round pushes it.
+    assert!(lagging.has_unpushed_changes().unwrap());
+}

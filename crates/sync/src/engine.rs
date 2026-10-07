@@ -27,6 +27,12 @@ fn ensure_still_bound(app: &App, session: &Session) -> Result<(), SyncError> {
     }
 }
 
+/// Once the log holds more rows than this past the snapshot, a caught-up
+/// device compacts it. Keeps every account at one snapshot plus a short
+/// tail -- and a fresh install at one snapshot plus at most this many
+/// updates to import -- however long the account has been in use.
+const COMPACT_AFTER_ROWS: i64 = 200;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SyncOutcome {
     pub pulled: usize,
@@ -59,7 +65,8 @@ impl SyncEngine {
     /// devices already contributed before contributing its own changes --
     /// this ordering doesn't affect correctness, Loro's merge is
     /// commutative either way, but it means a device's own push always
-    /// reflects the latest merged state), then push.
+    /// reflects the latest merged state), then push, then compact the
+    /// server's log if it has grown long enough.
     pub fn sync_once(&self, app: &App, session: &Session) -> Result<SyncOutcome, SyncError> {
         let token = session.access_token.as_str();
         // Resets local state first if a different account synced here
@@ -67,14 +74,29 @@ impl SyncEngine {
         app.bind_sync_account(&session.user_id)?;
 
         let mut pulled = 0;
-        let since = app.last_pulled_seq()?;
-        let updates = self.transport.pull(token, since)?;
-        for update in updates {
-            ensure_still_bound(app, session)?;
-            app.import_from_pull(&update.payload)?;
-            app.mark_pulled(update.seq)?;
-            pulled += 1;
-        }
+        let log_len = loop {
+            let page = self.transport.pull(token, app.last_pulled_seq()?)?;
+            // Before the rows: the rows between this device's cursor and
+            // the snapshot are gone, and the snapshot stands in for them.
+            if let Some(snapshot) = page.snapshot {
+                ensure_still_bound(app, session)?;
+                app.import_from_pull(&snapshot.payload)?;
+                app.mark_pulled(snapshot.as_of_seq)?;
+                pulled += 1;
+            }
+            let page_was_empty = page.rows.is_empty();
+            for update in page.rows {
+                ensure_still_bound(app, session)?;
+                app.import_from_pull(&update.payload)?;
+                app.mark_pulled(update.seq)?;
+                pulled += 1;
+            }
+            // An empty page can't move the cursor, so asking again would
+            // only get the same page back.
+            if !page.has_more || page_was_empty {
+                break page.log_len;
+            }
+        };
 
         ensure_still_bound(app, session)?;
         let pushed_bytes = if app.has_unpushed_changes()? {
@@ -85,12 +107,33 @@ impl SyncEngine {
         } else {
             0
         };
+        if log_len > COMPACT_AFTER_ROWS {
+            self.compact(app, session)?;
+        }
         app.mark_synced()?;
 
         Ok(SyncOutcome {
             pulled,
             pushed_bytes,
         })
+    }
+
+    /// Replaces the server's log, up to this device's cursor, with a
+    /// snapshot of its whole document -- which holds every row up to that
+    /// cursor, having just pulled them. Best effort: if the server refuses
+    /// (another device compacted further first) or the request fails, the
+    /// log just stays a little longer and a later round tries again, so
+    /// neither fails the round.
+    fn compact(&self, app: &App, session: &Session) -> Result<(), SyncError> {
+        let Some(as_of_seq) = app.last_pulled_seq()? else {
+            return Ok(());
+        };
+        ensure_still_bound(app, session)?;
+        let snapshot = app.export_for_compaction()?;
+        let _ = self
+            .transport
+            .compact(&session.access_token, as_of_seq, snapshot);
+        Ok(())
     }
 }
 
@@ -162,7 +205,7 @@ mod tests {
 
         let result = engine.sync_once(&app, &fresh_session("tok"));
         assert!(result.unwrap().pushed_bytes > 0);
-        assert_eq!(transport.pull("tok", None).unwrap().len(), 1);
+        assert_eq!(transport.log_rows().len(), 1);
         assert!(app.last_synced_at().unwrap().is_some());
     }
 
@@ -221,8 +264,11 @@ mod tests {
                 "push should not be reached".to_string(),
             ))
         }
-        fn pull(&self, _: &str, _: Option<i64>) -> Result<Vec<crate::PulledUpdate>, SyncError> {
+        fn pull(&self, _: &str, _: Option<i64>) -> Result<crate::PullPage, SyncError> {
             Err(SyncError::Transport("boom".to_string()))
+        }
+        fn compact(&self, _: &str, _: i64, _: Vec<u8>) -> Result<bool, SyncError> {
+            unreachable!("compact after a failed pull")
         }
     }
 
@@ -231,8 +277,11 @@ mod tests {
         fn push(&self, _: &str, _: u64, _: Vec<u8>) -> Result<(), SyncError> {
             Err(SyncError::Transport("boom".to_string()))
         }
-        fn pull(&self, _: &str, _: Option<i64>) -> Result<Vec<crate::PulledUpdate>, SyncError> {
-            Ok(Vec::new())
+        fn pull(&self, _: &str, _: Option<i64>) -> Result<crate::PullPage, SyncError> {
+            Ok(crate::PullPage::default())
+        }
+        fn compact(&self, _: &str, _: i64, _: Vec<u8>) -> Result<bool, SyncError> {
+            unreachable!("compact after a failed push")
         }
     }
 
@@ -307,7 +356,7 @@ mod tests {
 
         // ...and nothing of A's reached B's server.
         let fresh_b_device = open(&dir, "fresh-b.sqlite3");
-        for update in b_server.pull("tok", None).unwrap() {
+        for update in b_server.log_rows() {
             fresh_b_device.import_from_pull(&update.payload).unwrap();
         }
         assert!(!titles(&fresh_b_device).contains(&"a's task".to_string()));
@@ -325,14 +374,19 @@ mod tests {
             self.inner.push(token, device_id, payload)
         }
 
-        fn pull(
+        fn pull(&self, token: &str, since_seq: Option<i64>) -> Result<crate::PullPage, SyncError> {
+            let page = self.inner.pull(token, since_seq)?;
+            self.app.bind_sync_account("someone-else").unwrap();
+            Ok(page)
+        }
+
+        fn compact(
             &self,
             token: &str,
-            since_seq: Option<i64>,
-        ) -> Result<Vec<crate::PulledUpdate>, SyncError> {
-            let rows = self.inner.pull(token, since_seq)?;
-            self.app.bind_sync_account("someone-else").unwrap();
-            Ok(rows)
+            as_of_seq: i64,
+            payload: Vec<u8>,
+        ) -> Result<bool, SyncError> {
+            self.inner.compact(token, as_of_seq, payload)
         }
     }
 
@@ -378,6 +432,199 @@ mod tests {
         let result = engine.sync_once(&app, &session_for("a"));
 
         assert!(matches!(result, Err(SyncError::Auth(_))));
-        assert!(transport.inner.pull("tok", None).unwrap().is_empty());
+        assert!(transport.inner.log_rows().is_empty());
+    }
+
+    /// Pushes one row per title from `writer`, each its own Loro update --
+    /// the shape a long-lived account's log has.
+    fn push_one_row_per_task(transport: &InMemoryTransport, writer: &App, titles: &[String]) {
+        for title in titles {
+            add(writer, title);
+            transport
+                .push("tok", writer.peer_id(), writer.export_for_push().unwrap())
+                .unwrap();
+            writer.mark_pushed().unwrap();
+        }
+    }
+
+    fn numbered(prefix: &str, n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("{prefix} {i}")).collect()
+    }
+
+    fn sorted_titles(app: &App) -> Vec<String> {
+        let mut titles = titles(app);
+        titles.sort();
+        titles
+    }
+
+    #[test]
+    fn a_fresh_device_rebuilds_from_the_snapshot_plus_the_tail() {
+        let dir = TempDir::new().unwrap();
+        let writer = open(&dir, "writer.sqlite3");
+        let transport = Arc::new(InMemoryTransport::new());
+        push_one_row_per_task(&transport, &writer, &numbered("old", 3));
+        let as_of = transport.log_rows().last().unwrap().seq;
+        transport
+            .compact("tok", as_of, writer.export_for_compaction().unwrap())
+            .unwrap();
+        push_one_row_per_task(&transport, &writer, &numbered("new", 2));
+
+        let fresh = open(&dir, "fresh.sqlite3");
+        let engine = SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>, unused_auth());
+        let outcome = engine.sync_once(&fresh, &fresh_session("tok")).unwrap();
+
+        assert_eq!(outcome.pulled, 3); // the snapshot plus two rows
+        assert_eq!(sorted_titles(&fresh), sorted_titles(&writer));
+        assert_eq!(
+            fresh.last_pulled_seq().unwrap(),
+            Some(transport.log_rows()[1].seq)
+        );
+    }
+
+    #[test]
+    fn a_device_whose_cursor_was_compacted_away_still_gets_every_change() {
+        let dir = TempDir::new().unwrap();
+        let writer = open(&dir, "writer.sqlite3");
+        let lagging = open(&dir, "lagging.sqlite3");
+        let transport = Arc::new(InMemoryTransport::new());
+        let engine = SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>, unused_auth());
+        push_one_row_per_task(&transport, &writer, &numbered("seen", 1));
+        engine.sync_once(&lagging, &fresh_session("tok")).unwrap();
+
+        // While `lagging` is away, more rows land and get compacted --
+        // including the ones right after its cursor.
+        push_one_row_per_task(&transport, &writer, &numbered("missed", 3));
+        let as_of = transport.log_rows().last().unwrap().seq;
+        transport
+            .compact("tok", as_of, writer.export_for_compaction().unwrap())
+            .unwrap();
+        push_one_row_per_task(&transport, &writer, &numbered("after", 1));
+
+        engine.sync_once(&lagging, &fresh_session("tok")).unwrap();
+
+        assert_eq!(sorted_titles(&lagging), sorted_titles(&writer));
+    }
+
+    #[test]
+    fn one_round_pulls_every_page() {
+        let dir = TempDir::new().unwrap();
+        let writer = open(&dir, "writer.sqlite3");
+        let transport = Arc::new(InMemoryTransport::with_page_limit(2));
+        push_one_row_per_task(&transport, &writer, &numbered("task", 5));
+
+        let app = open(&dir, "a.sqlite3");
+        let engine = SyncEngine::new(transport as Arc<dyn SyncTransport>, unused_auth());
+        let outcome = engine.sync_once(&app, &fresh_session("tok")).unwrap();
+
+        assert_eq!(outcome.pulled, 5);
+        assert_eq!(sorted_titles(&app), sorted_titles(&writer));
+    }
+
+    #[test]
+    fn a_round_that_finds_the_log_long_enough_compacts_it() {
+        let dir = TempDir::new().unwrap();
+        let writer = open(&dir, "writer.sqlite3");
+        let transport = Arc::new(InMemoryTransport::new());
+        push_one_row_per_task(&transport, &writer, &numbered("task", 201));
+
+        let app = open(&dir, "a.sqlite3");
+        let engine = SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>, unused_auth());
+        engine.sync_once(&app, &fresh_session("tok")).unwrap();
+
+        // Folded up to the last row `app` pulled; only its own push, which
+        // came after, is left.
+        let snapshot = transport.snapshot().unwrap();
+        assert_eq!(Some(snapshot.as_of_seq), app.last_pulled_seq().unwrap());
+        assert_eq!(transport.log_rows().len(), 1);
+
+        // ...and nothing was lost: a fresh device still gets all of it.
+        let fresh = open(&dir, "fresh.sqlite3");
+        engine.sync_once(&fresh, &fresh_session("tok")).unwrap();
+        assert_eq!(sorted_titles(&fresh), sorted_titles(&writer));
+    }
+
+    #[test]
+    fn a_log_at_the_threshold_is_left_alone() {
+        let dir = TempDir::new().unwrap();
+        let writer = open(&dir, "writer.sqlite3");
+        let transport = Arc::new(InMemoryTransport::new());
+        push_one_row_per_task(&transport, &writer, &numbered("task", 200));
+
+        let app = open(&dir, "a.sqlite3");
+        let engine = SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>, unused_auth());
+        engine.sync_once(&app, &fresh_session("tok")).unwrap();
+
+        assert_eq!(transport.snapshot(), None);
+    }
+
+    /// Reports a log long enough to compact, and fails the compaction.
+    struct CompactFails;
+    impl SyncTransport for CompactFails {
+        fn push(&self, _: &str, _: u64, _: Vec<u8>) -> Result<(), SyncError> {
+            Ok(())
+        }
+        fn pull(&self, _: &str, _: Option<i64>) -> Result<crate::PullPage, SyncError> {
+            Ok(crate::PullPage {
+                // A row, so `compact` has a cursor to compact up to.
+                rows: vec![crate::PulledUpdate {
+                    seq: 0,
+                    payload: open_scratch_export(),
+                }],
+                log_len: COMPACT_AFTER_ROWS + 1,
+                ..Default::default()
+            })
+        }
+        fn compact(&self, _: &str, _: i64, _: Vec<u8>) -> Result<bool, SyncError> {
+            Err(SyncError::Transport("boom".to_string()))
+        }
+    }
+
+    /// Real Loro bytes, since `import_from_pull` rejects anything else.
+    fn open_scratch_export() -> Vec<u8> {
+        let dir = TempDir::new().unwrap();
+        open(&dir, "scratch.sqlite3").export_for_push().unwrap()
+    }
+
+    #[test]
+    fn a_failed_compaction_does_not_fail_the_round() {
+        let dir = TempDir::new().unwrap();
+        let app = open(&dir, "a.sqlite3");
+        let engine = SyncEngine::new(Arc::new(CompactFails), unused_auth());
+
+        engine.sync_once(&app, &fresh_session("tok")).unwrap();
+
+        assert!(app.last_synced_at().unwrap().is_some());
+    }
+
+    /// Claims there's more to pull but never hands any of it over.
+    struct EndlessEmptyPages;
+    impl SyncTransport for EndlessEmptyPages {
+        fn push(&self, _: &str, _: u64, _: Vec<u8>) -> Result<(), SyncError> {
+            Ok(())
+        }
+        fn pull(&self, _: &str, _: Option<i64>) -> Result<crate::PullPage, SyncError> {
+            Ok(crate::PullPage {
+                has_more: true,
+                ..Default::default()
+            })
+        }
+        fn compact(&self, _: &str, _: i64, _: Vec<u8>) -> Result<bool, SyncError> {
+            unreachable!("an empty log is never compacted")
+        }
+    }
+
+    #[test]
+    fn an_empty_page_ends_the_pull_even_if_it_claims_there_is_more() {
+        let dir = TempDir::new().unwrap();
+        let app = open(&dir, "a.sqlite3");
+        let engine = SyncEngine::new(Arc::new(EndlessEmptyPages), unused_auth());
+
+        assert_eq!(
+            engine
+                .sync_once(&app, &fresh_session("tok"))
+                .unwrap()
+                .pulled,
+            0
+        );
     }
 }

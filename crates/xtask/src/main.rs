@@ -20,8 +20,11 @@ fn main() -> Result<()> {
         Some("test") => test(),
         Some("cov") => cov(),
         Some("ci") => ci(),
+        Some("pgtest") => pgtest(),
         Some(other) => bail!("unknown xtask command: {other}"),
-        None => bail!("usage: cargo xtask <bindings|build|mac|run|sim|device|package|test|cov|ci>"),
+        None => bail!(
+            "usage: cargo xtask <bindings|build|mac|run|sim|device|package|test|cov|ci|pgtest>"
+        ),
     }
 }
 
@@ -447,6 +450,110 @@ fn ci() -> Result<()> {
     test()?;
     cov()?;
     Ok(())
+}
+
+const PG_CONTAINER: &str = "todo-pgtest";
+const PG_IMAGE: &str = "docker.io/library/postgres:17";
+const PG_PORT: u16 = 54329;
+
+/// Runs `crates/sql-tests` against `supabase/schema.sql` in a throwaway
+/// Postgres container (Apple `container`): applies the Supabase shim, the
+/// schema twice (to prove it re-runs cleanly) and the lockdown, runs the
+/// ignored-by-default tests, and removes the container whatever happens.
+fn pgtest() -> Result<()> {
+    require_macos("pgtest")?;
+    let meta = cargo_metadata()?;
+    let supabase = meta.workspace_root.join("supabase");
+
+    // Left over from a run that was killed before it could clean up.
+    stop_pg_container();
+    run_cmd(Command::new("container").args([
+        "run",
+        "--detach",
+        "--rm",
+        "--name",
+        PG_CONTAINER,
+        "--env",
+        "POSTGRES_PASSWORD=pgtest",
+        "--publish",
+        &format!("127.0.0.1:{PG_PORT}:5432"),
+        PG_IMAGE,
+    ]))?;
+    let result = pgtest_in_container(&supabase);
+    stop_pg_container();
+    result
+}
+
+fn pgtest_in_container(supabase: &Path) -> Result<()> {
+    wait_for_pg()?;
+    for file in [
+        "test/supabase_shim.sql",
+        "schema.sql",
+        "schema.sql",
+        "lockdown.sql",
+    ] {
+        let sql = fs::read_to_string(supabase.join(file))
+            .with_context(|| format!("reading supabase/{file}"))?;
+        run_cmd(Command::new("container").args([
+            "exec",
+            PG_CONTAINER,
+            "psql",
+            "--username=postgres",
+            "--quiet",
+            "--command",
+            &sql,
+        ]))
+        .with_context(|| format!("applying supabase/{file}"))?;
+    }
+
+    run_cmd(
+        Command::new("cargo")
+            .args([
+                "nextest",
+                "run",
+                "--package",
+                "todo-sql-tests",
+                "--run-ignored",
+                "only",
+            ])
+            .env(
+                "TODO_SYNC_PG_URL",
+                format!("postgres://postgres:pgtest@127.0.0.1:{PG_PORT}/postgres"),
+            ),
+    )
+}
+
+/// Polls over TCP, not the socket: the image's first-boot init runs a
+/// temporary socket-only server that would pass a socket check before the
+/// real one is up.
+fn wait_for_pg() -> Result<()> {
+    for _ in 0..60 {
+        let ready = Command::new("container")
+            .args([
+                "exec",
+                PG_CONTAINER,
+                "pg_isready",
+                "--host=127.0.0.1",
+                "--username=postgres",
+            ])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if ready {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    bail!("Postgres in container `{PG_CONTAINER}` wasn't ready after 30s")
+}
+
+/// Best effort: fails harmlessly when there's nothing to stop. `--rm` on
+/// `container run` deletes it once stopped.
+fn stop_pg_container() {
+    let _ = Command::new("container")
+        .args(["stop", PG_CONTAINER])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 #[cfg(test)]

@@ -11,7 +11,7 @@ mod transport;
 pub use auth::{AuthClient, Session};
 pub use coordinator::{sign_out, AutoSyncCoordinator, CoordinatorConfig};
 pub use engine::{SyncEngine, SyncOutcome};
-pub use transport::{HttpTransport, PulledUpdate, SyncTransport};
+pub use transport::{HttpTransport, PullPage, PulledSnapshot, PulledUpdate, SyncTransport};
 
 #[cfg(any(test, feature = "testing"))]
 pub use transport::InMemoryTransport;

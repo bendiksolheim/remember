@@ -8,7 +8,7 @@ Apple SDK. Do not try to install either, accept the situation.
 **You may:** write and test Rust; run `cargo xtask test`, `cov`, `ci`,
 `bindings`; write Swift source files.
 
-**You may not:** build or run the app. `cargo xtask mac | run | sim | device`
+**You may not:** build or run the app. `cargo xtask mac | run | sim | device | pgtest`
 require macOS and will refuse to run here. You may not run `cargo xtask ci` either.
 
 ## Non-negotiables
