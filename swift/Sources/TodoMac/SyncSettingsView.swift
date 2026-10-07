@@ -20,6 +20,12 @@ struct SyncSettingsView: SwiftUI.View {
             } else {
                 signedOutSection
             }
+
+            if let keychainError = model.keychainError {
+                Text(keychainError)
+                    .foregroundStyle(.red)
+                    .font(.caption)
+            }
         }
         .padding(20)
         .frame(width: 320)

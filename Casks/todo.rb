@@ -17,7 +17,14 @@ cask "todo" do
                     args: ["-cr", "#{appdir}/Todo.app"]
   end
 
-  zap trash: [
-    "~/Library/Application Support/no.bendik.todo",
-  ]
+  # The sync session lives in the login keychain, not under ~/Library.
+  # `security` exits non-zero when there is no item (never signed in).
+  zap script: {
+        executable:   "/usr/bin/security",
+        args:         ["delete-generic-password", "-s", "no.bendik.todo.sync", "-a", "session"],
+        must_succeed: false,
+      },
+      trash:  [
+        "~/Library/Application Support/no.bendik.todo",
+      ]
 end

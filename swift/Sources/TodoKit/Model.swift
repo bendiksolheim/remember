@@ -15,6 +15,12 @@ public final class TodoModel {
     public private(set) var snapshot: Snapshot?
     public private(set) var isSyncing = false
     public private(set) var lastSyncError: String?
+    /// Set when the session couldn't be written to or removed from the
+    /// Keychain, cleared by the next write or removal that succeeds. Separate
+    /// from `lastSyncError`, which every successful round clears: syncing
+    /// keeps working on the in-memory session, but the next launch won't see
+    /// it, so this has to stay visible until it's fixed.
+    public private(set) var keychainError: String?
     // A stored property, not computed from `KeychainStore.load()` on every
     // access — `@Observable` only tracks reads/writes of stored properties,
     // so a computed one reading external state wouldn't invalidate SwiftUI
@@ -146,7 +152,14 @@ public final class TodoModel {
         let session = try await Task.detached(priority: .userInitiated) {
             try call(syncClient)
         }.value
-        persist(session)
+        do {
+            try persist(session)
+        } catch {
+            // Not stored means not signed in: don't leave a live session
+            // behind on the server that nothing on this device can use.
+            syncClient.signOut(session: session)
+            throw error
+        }
         isSignedIn = true
         syncClient.setSyncToken(session: session)
         // A user might have used the app locally before ever signing in --
@@ -163,7 +176,14 @@ public final class TodoModel {
     /// Rust side), so the two accounts' todos never mix.
     public func signOut() {
         let session = loadSession()
-        KeychainStore.delete()
+        do {
+            try KeychainStore.delete()
+            keychainError = nil
+        } catch {
+            // Sign out anyway: the revoke below makes the leftover token
+            // useless, so at worst the next launch shows an auth error.
+            keychainError = "Couldn't remove the saved session: \(error)"
+        }
         isSignedIn = false
         // A round in flight may be abandoned without reporting a result, so
         // nothing else would clear this.
@@ -191,15 +211,19 @@ public final class TodoModel {
         syncClient.syncSoon()
     }
 
-    private func persist(_ session: Session) {
+    private func persist(_ session: Session) throws {
         let stored = StoredSession(
             accessToken: session.accessToken,
             refreshToken: session.refreshToken,
             userId: session.userId,
             expiresAt: session.expiresAt
         )
-        if let data = try? JSONEncoder().encode(stored) {
-            KeychainStore.save(data)
+        do {
+            try KeychainStore.save(try JSONEncoder().encode(stored))
+            keychainError = nil
+        } catch {
+            keychainError = "Couldn't save the session: \(error)"
+            throw error
         }
     }
 
@@ -211,7 +235,9 @@ public final class TodoModel {
     /// after that check but before this runs.
     private func persistRefreshed(_ session: Session) {
         guard isSignedIn else { return }
-        persist(session)
+        // Already recorded in `keychainError`; the coordinator still holds
+        // the rotated session, so syncing goes on until the app quits.
+        try? persist(session)
     }
 
     private func loadSession() -> Session? {
