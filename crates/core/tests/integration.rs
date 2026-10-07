@@ -670,6 +670,57 @@ fn add_list(doc: &mut Doc, clock: &FixedClock, ids: &SeqIdSource, name: &str) ->
 }
 
 #[test]
+fn every_list_counts_all_its_tasks_whatever_list_or_view_is_read() {
+    let mut doc = Doc::new(1).unwrap();
+    let clock = FixedClock(0);
+    let ids = SeqIdSource::new();
+    let work = add_list(&mut doc, &clock, &ids, "Work");
+    add_list(&mut doc, &clock, &ids, "Empty");
+    add(&mut doc, &clock, &ids, "in default");
+    for title in ["w1", "w2"] {
+        doc.apply(
+            Command::Add {
+                title: title.to_string(),
+                after: None,
+                due: None,
+                list_id: Some(work.clone()),
+            },
+            &clock,
+            &ids,
+        )
+        .unwrap();
+    }
+    let done_id = doc.read(ViewFilter::All, &work, &clock).rows[0].id.clone();
+    doc.apply(
+        Command::SetDone {
+            id: done_id,
+            done: true,
+        },
+        &clock,
+        &ids,
+    )
+    .unwrap();
+
+    // Read the default list in the Active view: neither the list being
+    // read nor the filter changes the counts, and a done task still counts
+    // (deleting the list would delete it too).
+    let counts: Vec<(String, u32)> = doc
+        .read(ViewFilter::Active, "default", &clock)
+        .lists
+        .into_iter()
+        .map(|l| (l.name, l.task_count))
+        .collect();
+    assert_eq!(
+        counts,
+        vec![
+            ("Empty".to_string(), 0),
+            ("Work".to_string(), 2),
+            ("Tasks".to_string(), 1),
+        ]
+    );
+}
+
+#[test]
 fn fresh_doc_has_one_default_list_named_tasks() {
     let doc = Doc::new(1).unwrap();
     let clock = FixedClock(0);

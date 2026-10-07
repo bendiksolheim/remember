@@ -100,6 +100,9 @@ pub struct ListRow {
     pub id: String,
     pub name: String,
     pub color: ListColor,
+    /// Every task in the list, done ones included -- what deleting it
+    /// would delete.
+    pub task_count: u32,
 }
 
 /// A list's identity color — an opaque palette slot, not a hex value.
@@ -242,6 +245,15 @@ impl App {
     pub fn flush(&self) -> Result<(), AppError> {
         self.inner.flush().map_err(convert::app_error_from_core)
     }
+
+    /// When this device last finished a sync round without errors, in Unix
+    /// seconds; `None` if never (for the signed-in account). Read it at
+    /// launch and after each `SyncStatusListener::on_sync_complete`.
+    pub fn last_synced_at(&self) -> Result<Option<i64>, AppError> {
+        self.inner
+            .last_synced_at()
+            .map_err(convert::app_error_from_core)
+    }
 }
 
 /// An authenticated device's credentials. Rust never persists this —
@@ -255,6 +267,9 @@ pub struct Session {
     pub access_token: String,
     pub refresh_token: String,
     pub user_id: String,
+    /// For display only. `None` for sessions stored before this field
+    /// existed, until their next refresh.
+    pub email: Option<String>,
     pub expires_at: i64,
 }
 

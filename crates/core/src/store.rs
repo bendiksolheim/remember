@@ -112,33 +112,22 @@ impl Store {
     /// device has never pulled — the next pull should start from the
     /// beginning of the account's log.
     pub fn load_pulled_seq(&self) -> Result<Option<i64>, CoreError> {
-        let bytes: Option<Vec<u8>> = self
-            .lock()
-            .query_row(
-                "SELECT value FROM meta WHERE key = 'pulled_seq'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(store_err)?;
-        let Some(bytes) = bytes else {
-            return Ok(None);
-        };
-        let arr: [u8; 8] = bytes
-            .try_into()
-            .map_err(|_| CoreError::Storage("corrupt pulled_seq in meta table".to_string()))?;
-        Ok(Some(i64::from_le_bytes(arr)))
+        self.load_meta_i64("pulled_seq")
     }
 
     pub fn save_pulled_seq(&self, seq: i64) -> Result<(), CoreError> {
-        self.lock()
-            .execute(
-                "INSERT INTO meta (key, value) VALUES ('pulled_seq', ?1)
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (seq.to_le_bytes().to_vec(),),
-            )
-            .map_err(store_err)?;
-        Ok(())
+        self.save_meta_i64("pulled_seq", seq)
+    }
+
+    /// When this device last finished a sync round without errors, in Unix
+    /// seconds. `None` means never (or not since a different account took
+    /// over, see `reset_for_account`).
+    pub fn load_last_synced_at(&self) -> Result<Option<i64>, CoreError> {
+        self.load_meta_i64("last_synced_at")
+    }
+
+    pub fn save_last_synced_at(&self, at: i64) -> Result<(), CoreError> {
+        self.save_meta_i64("last_synced_at", at)
     }
 
     /// The list selected on *this device* — both what's displayed and where
@@ -165,7 +154,7 @@ impl Store {
 
     /// Hands this install over to a different sync account, atomically:
     /// replaces the document with `snapshot` (a fresh, empty one) under a
-    /// new `peer_id`, forgets both sync cursors and the current list, and
+    /// new `peer_id`, forgets both sync cursors, the last sync time and the current list, and
     /// records `account` as the owner. All-or-nothing, so a crash midway
     /// can never leave one account's data bound to another.
     pub fn reset_for_account(
@@ -178,7 +167,7 @@ impl Store {
         let mut conn = self.lock();
         let tx = conn.transaction().map_err(store_err)?;
         tx.execute(
-            "DELETE FROM meta WHERE key IN ('pushed_vv', 'pulled_seq', 'current_list')",
+            "DELETE FROM meta WHERE key IN ('pushed_vv', 'pulled_seq', 'last_synced_at', 'current_list')",
             [],
         )
         .map_err(store_err)?;
@@ -195,6 +184,34 @@ impl Store {
         )
         .map_err(store_err)?;
         tx.commit().map_err(store_err)
+    }
+
+    fn load_meta_i64(&self, key: &str) -> Result<Option<i64>, CoreError> {
+        let bytes: Option<Vec<u8>> = self
+            .lock()
+            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(store_err)?;
+        let Some(bytes) = bytes else {
+            return Ok(None);
+        };
+        let arr: [u8; 8] = bytes
+            .try_into()
+            .map_err(|_| CoreError::Storage(format!("corrupt {key} in meta table")))?;
+        Ok(Some(i64::from_le_bytes(arr)))
+    }
+
+    fn save_meta_i64(&self, key: &str, value: i64) -> Result<(), CoreError> {
+        self.lock()
+            .execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value.to_le_bytes().to_vec()),
+            )
+            .map_err(store_err)?;
+        Ok(())
     }
 
     fn load_meta_string(&self, key: &str) -> Result<Option<String>, CoreError> {

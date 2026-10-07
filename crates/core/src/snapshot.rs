@@ -40,6 +40,9 @@ pub struct ListRow {
     pub id: String,
     pub name: String,
     pub color: ListColor,
+    /// Every task in the list, done ones included -- what a `DeleteList`
+    /// on it would delete.
+    pub task_count: u32,
 }
 
 /// A list's identity color — an opaque palette slot, not a hex value, so

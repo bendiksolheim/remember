@@ -85,6 +85,7 @@ impl SyncEngine {
         } else {
             0
         };
+        app.mark_synced()?;
 
         Ok(SyncOutcome {
             pulled,
@@ -124,6 +125,7 @@ mod tests {
             access_token: token.to_string(),
             refresh_token: "refresh".to_string(),
             user_id: "user".to_string(),
+            email: None,
             expires_at: i64::MAX,
         }
     }
@@ -161,6 +163,7 @@ mod tests {
         let result = engine.sync_once(&app, &fresh_session("tok"));
         assert!(result.unwrap().pushed_bytes > 0);
         assert_eq!(transport.pull("tok", None).unwrap().len(), 1);
+        assert!(app.last_synced_at().unwrap().is_some());
     }
 
     #[test]
@@ -243,6 +246,7 @@ mod tests {
 
         let result = engine.sync_once(&app, &fresh_session("tok"));
         assert!(matches!(result, Err(SyncError::Transport(m)) if m == "boom"));
+        assert_eq!(app.last_synced_at().unwrap(), None);
     }
 
     #[test]
@@ -254,6 +258,8 @@ mod tests {
 
         let result = engine.sync_once(&app, &fresh_session("tok"));
         assert!(matches!(result.err().unwrap(), SyncError::Transport(_)));
+        // Half a round is not "synced".
+        assert_eq!(app.last_synced_at().unwrap(), None);
     }
 
     fn session_for(user_id: &str) -> Session {

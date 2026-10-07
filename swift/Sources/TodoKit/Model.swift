@@ -13,8 +13,14 @@ public func defaultDatabasePath() -> String {
 @Observable
 public final class TodoModel {
     public private(set) var snapshot: Snapshot?
-    public private(set) var isSyncing = false
     public private(set) var lastSyncError: String?
+    /// When this device last finished a sync round without errors, for the
+    /// signed-in account. Read from the Rust side (it's persisted there), so
+    /// it's right straight after launch, not only after the first round.
+    public private(set) var lastSyncedAt: Date?
+    /// Who is signed in, for display. `nil` when signed out, and for a
+    /// session stored before emails were kept, until its next refresh.
+    public private(set) var accountEmail: String?
     /// Set when the session couldn't be written to or removed from the
     /// Keychain, cleared by the next write or removal that succeeds. Separate
     /// from `lastSyncError`, which every successful round clears: syncing
@@ -33,8 +39,7 @@ public final class TodoModel {
     private let syncClient: SyncClient?
     // Kept alive for the lifetime of `TodoModel`: `startAutoSync` is only
     // ever called once, so this is the one listener its coordinator reports
-    // through -- every round, "Sync Now" included -- for as long as the app
-    // runs.
+    // through -- every round -- for as long as the app runs.
     private var autoSyncBridge: SyncStatusBridge?
 
     public init(
@@ -66,15 +71,12 @@ public final class TodoModel {
             let autoSyncBridge = SyncStatusBridge(
                 onComplete: { [weak self] _ in
                     Task { @MainActor in
-                        self?.isSyncing = false
                         self?.lastSyncError = nil
+                        self?.refreshLastSyncedAt()
                     }
                 },
                 onError: { [weak self] error in
-                    Task { @MainActor in
-                        self?.isSyncing = false
-                        self?.lastSyncError = "\(error)"
-                    }
+                    Task { @MainActor in self?.lastSyncError = "\(error)" }
                 },
                 onSessionRefreshed: { [weak self] session in
                     Task { @MainActor in self?.persistRefreshed(session) }
@@ -87,6 +89,14 @@ public final class TodoModel {
             // sync, this just tells it a token is available at all.
             syncClient.setSyncToken(session: loadSession())
         }
+        accountEmail = loadSession()?.email
+        refreshLastSyncedAt()
+    }
+
+    private func refreshLastSyncedAt() {
+        lastSyncedAt = (try? app.lastSyncedAt())
+            .flatMap { $0 }
+            .map { Date(timeIntervalSince1970: TimeInterval($0)) }
     }
 
     public func dispatch(_ command: Command) {
@@ -161,6 +171,7 @@ public final class TodoModel {
             throw error
         }
         isSignedIn = true
+        accountEmail = session.email
         syncClient.setSyncToken(session: session)
         // A user might have used the app locally before ever signing in --
         // don't make them wait for the periodic fallback to find that out.
@@ -185,9 +196,7 @@ public final class TodoModel {
             keychainError = "Couldn't remove the saved session: \(error)"
         }
         isSignedIn = false
-        // A round in flight may be abandoned without reporting a result, so
-        // nothing else would clear this.
-        isSyncing = false
+        accountEmail = nil
         syncClient?.signOut(session: session)
     }
 
@@ -199,23 +208,12 @@ public final class TodoModel {
         syncClient?.syncSoon()
     }
 
-    /// Asks auto-sync for a round right away rather than running one of its
-    /// own: auto-sync owns the session, and a second round refreshing from
-    /// the Keychain copy would fight it over Supabase's refresh-token
-    /// rotation. `isSyncing` clears when the next round finishes -- which
-    /// may be one already in flight; the requested one then follows it.
-    public func syncNow() {
-        guard let syncClient, isSignedIn else { return }
-        isSyncing = true
-        lastSyncError = nil
-        syncClient.syncSoon()
-    }
-
     private func persist(_ session: Session) throws {
         let stored = StoredSession(
             accessToken: session.accessToken,
             refreshToken: session.refreshToken,
             userId: session.userId,
+            email: session.email,
             expiresAt: session.expiresAt
         )
         do {
@@ -235,6 +233,8 @@ public final class TodoModel {
     /// after that check but before this runs.
     private func persistRefreshed(_ session: Session) {
         guard isSignedIn else { return }
+        // Picks up the email for a session stored before emails were kept.
+        accountEmail = session.email
         // Already recorded in `keychainError`; the coordinator still holds
         // the rotated session, so syncing goes on until the app quits.
         try? persist(session)
@@ -248,6 +248,7 @@ public final class TodoModel {
             accessToken: stored.accessToken,
             refreshToken: stored.refreshToken,
             userId: stored.userId,
+            email: stored.email,
             expiresAt: stored.expiresAt
         )
     }
@@ -285,12 +286,14 @@ private struct StoredSession: Codable {
     let accessToken: String
     let refreshToken: String
     let userId: String
+    let email: String?
     let expiresAt: Int64
 
-    init(accessToken: String, refreshToken: String, userId: String, expiresAt: Int64) {
+    init(accessToken: String, refreshToken: String, userId: String, email: String?, expiresAt: Int64) {
         self.accessToken = accessToken
         self.refreshToken = refreshToken
         self.userId = userId
+        self.email = email
         self.expiresAt = expiresAt
     }
 
@@ -299,6 +302,9 @@ private struct StoredSession: Codable {
         accessToken = try container.decode(String.self, forKey: .accessToken)
         refreshToken = try container.decode(String.self, forKey: .refreshToken)
         userId = try container.decode(String.self, forKey: .userId)
+        // Missing in a session stored before emails were kept; the next
+        // refresh fills it in.
+        email = try container.decodeIfPresent(String.self, forKey: .email)
         // Missing in a session stored before refresh support shipped --
         // treat it as already-expired so the next sync attempt refreshes it
         // immediately rather than trusting a token whose real age is

@@ -37,6 +37,9 @@ pub struct Session {
     pub access_token: String,
     pub refresh_token: String,
     pub user_id: String,
+    /// The account's email, for showing who is signed in. `None` for a
+    /// response without one (Supabase also supports phone sign-in).
+    pub email: Option<String>,
     /// Unix seconds. Absolute, not a duration, so it survives being stored
     /// and reloaded without needing to know how long ago that happened.
     pub expires_at: i64,
@@ -67,6 +70,8 @@ struct RawAuthResponse {
 #[derive(Deserialize)]
 struct RawUser {
     id: String,
+    #[serde(default)]
+    email: Option<String>,
 }
 
 impl AuthClient {
@@ -118,7 +123,13 @@ impl AuthClient {
     /// whether to.
     pub fn ensure_fresh(&self, session: Session) -> Result<Session, SyncError> {
         if session.needs_refresh(self.clock.now()) {
-            self.refresh(&session.refresh_token)
+            let fresh = self.refresh(&session.refresh_token)?;
+            // Only for display, so a refresh response that happens to leave
+            // it out shouldn't make the UI forget who is signed in.
+            Ok(Session {
+                email: fresh.email.or(session.email),
+                ..fresh
+            })
         } else {
             Ok(session)
         }
@@ -201,6 +212,7 @@ impl AuthClient {
             access_token: raw.access_token,
             refresh_token: raw.refresh_token,
             user_id: raw.user.id,
+            email: raw.user.email,
             expires_at: self.clock.now() + raw.expires_in,
         })
     }
@@ -219,6 +231,7 @@ mod tests {
             access_token: "old-access".to_string(),
             refresh_token: "old-refresh".to_string(),
             user_id: "user-789".to_string(),
+            email: None,
             expires_at,
         }
     }
@@ -258,6 +271,7 @@ mod tests {
         assert_eq!(session.access_token, "access-123");
         assert_eq!(session.refresh_token, "refresh-456");
         assert_eq!(session.user_id, "user-789");
+        assert_eq!(session.email.as_deref(), Some("a@example.com"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -406,6 +420,61 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.access_token, "access-123");
+        // The stored session had none (stored before emails were kept);
+        // the refresh fills it in.
+        assert_eq!(result.email.as_deref(), Some("a@example.com"));
+    }
+
+    fn response_without_email() -> serde_json::Value {
+        let mut response = canned_response();
+        response["user"] = serde_json::json!({ "id": "user-789" });
+        response
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refresh_without_an_email_keeps_the_one_the_session_had() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v1/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response_without_email()))
+            .mount(&server)
+            .await;
+
+        let base = server.uri();
+        let session = Session {
+            email: Some("old@example.com".to_string()),
+            ..session_with_expiry(-1)
+        };
+        let result = tokio::task::spawn_blocking(move || {
+            AuthClient::with_clock(base, "anon-key", Arc::new(FixedClock(0))).ensure_fresh(session)
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(result.access_token, "access-123");
+        assert_eq!(result.email.as_deref(), Some("old@example.com"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_response_without_an_email_gives_a_session_without_one() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v1/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response_without_email()))
+            .mount(&server)
+            .await;
+
+        let base = server.uri();
+        let session = tokio::task::spawn_blocking(move || {
+            AuthClient::new(base, "anon-key").sign_in("a@example.com", "hunter2")
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(session.user_id, "user-789");
+        assert_eq!(session.email, None);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

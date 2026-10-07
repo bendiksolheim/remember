@@ -1,5 +1,4 @@
 import Cocoa
-import ServiceManagement
 import SwiftUI
 import TodoKit
 
@@ -38,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
 
         panel = SpotlightPanel(content: CaptureView(
             onDismiss: { [weak self] in self?.hide() },
-            onOpenListsSettings: { [weak self] in self?.showSettings(initialTab: .lists) },
+            onOpenListsSettings: { [weak self] in self?.showSettings(tab: .lists, focusNewList: true) },
             onContentHeightChange: { [weak self] height in self?.panel.resize(toContentHeight: height) }
         ).environment(model))
         panel.spotlightDelegate = self
@@ -60,7 +59,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
         }
 
         setUpStatusItem()
-        registerLoginItemIfNeeded()
         observeSyncTriggers()
         observeLocalOffsetTriggers()
     }
@@ -113,9 +111,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
         item.button?.image = NSImage(systemSymbolName: "checklist", accessibilityDescription: "Todo")
 
         let menu = NSMenu()
-        let syncItem = NSMenuItem(title: "Settings…", action: #selector(showSyncSettings), keyEquivalent: ",")
-        syncItem.target = self
-        menu.addItem(syncItem)
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         item.menu = menu
@@ -123,15 +121,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
         statusItem = item
     }
 
-    @objc private func showSyncSettings() {
-        showSettings(initialTab: .sync)
+    @objc private func openSettings() {
+        showSettings()
     }
 
-    private func showSettings(initialTab: SettingsTab) {
+    /// Also the app menu's "Settings…" (see `TodoMacApp`). `tab` nil opens
+    /// whichever tab the window last showed.
+    func showSettings(tab: SettingsTab? = nil, focusNewList: Bool = false) {
         if settingsWindowController == nil {
-            settingsWindowController = SettingsWindowController(model: model, initialTab: initialTab)
+            settingsWindowController = SettingsWindowController(
+                model: model,
+                hotKey: HotKeyStatus(shortcut: "⌥⌘Space", isRegistered: hotKey != nil),
+                onClose: {
+                    // Back to a menu-bar-only app once Settings is gone.
+                    NSApp.setActivationPolicy(.accessory)
+                }
+            )
         }
-        settingsWindowController?.show()
+        // In the Dock and ⌘Tab while Settings is open, so it can be found
+        // again after another app's window covers it.
+        NSApp.setActivationPolicy(.regular)
+        settingsWindowController?.show(tab: tab, focusNewList: focusNewList)
     }
 
     // MARK: - Sync triggers
@@ -193,17 +203,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
             queue: nil
         ) { [weak self] _ in
             Task { @MainActor in self?.model.setLocalOffsetSeconds() }
-        }
-    }
-
-    // MARK: - Login item
-
-    private func registerLoginItemIfNeeded() {
-        guard SMAppService.mainApp.status != .enabled else { return }
-        do {
-            try SMAppService.mainApp.register()
-        } catch {
-            NSLog("Todo: failed to register as a login item: \(error)")
         }
     }
 }

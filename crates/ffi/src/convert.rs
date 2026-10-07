@@ -79,6 +79,7 @@ pub fn list_row_from_core(row: &todo_core::ListRow) -> ListRow {
         id: row.id.clone(),
         name: row.name.clone(),
         color: list_color_from_core(row.color),
+        task_count: row.task_count,
     }
 }
 
@@ -130,6 +131,7 @@ pub fn session_from_sync(session: todo_sync::Session) -> Session {
         access_token: session.access_token,
         refresh_token: session.refresh_token,
         user_id: session.user_id,
+        email: session.email,
         expires_at: session.expires_at,
     }
 }
@@ -139,6 +141,7 @@ pub fn session_to_sync(session: Session) -> todo_sync::Session {
         access_token: session.access_token,
         refresh_token: session.refresh_token,
         user_id: session.user_id,
+        email: session.email,
         expires_at: session.expires_at,
     }
 }
@@ -301,10 +304,12 @@ mod tests {
             id: "l".to_string(),
             name: "Work".to_string(),
             color: todo_core::ListColor::Teal,
+            task_count: 4,
         });
         assert_eq!(row.id, "l");
         assert_eq!(row.name, "Work");
         assert_eq!(row.color, ListColor::Teal);
+        assert_eq!(row.task_count, 4);
     }
 
     #[test]
@@ -437,6 +442,7 @@ mod tests {
                 id: "l".to_string(),
                 name: "List".to_string(),
                 color: todo_core::ListColor::Pink,
+                task_count: 2,
             }],
             active_count: 3,
             can_undo: true,
@@ -496,11 +502,13 @@ mod tests {
             access_token: "a".to_string(),
             refresh_token: "r".to_string(),
             user_id: "u".to_string(),
+            email: Some("e@example.com".to_string()),
             expires_at: 42,
         });
         assert_eq!(session.access_token, "a");
         assert_eq!(session.refresh_token, "r");
         assert_eq!(session.user_id, "u");
+        assert_eq!(session.email.as_deref(), Some("e@example.com"));
         assert_eq!(session.expires_at, 42);
     }
 
@@ -510,11 +518,13 @@ mod tests {
             access_token: "a".to_string(),
             refresh_token: "r".to_string(),
             user_id: "u".to_string(),
+            email: Some("e@example.com".to_string()),
             expires_at: 42,
         });
         assert_eq!(session.access_token, "a");
         assert_eq!(session.refresh_token, "r");
         assert_eq!(session.user_id, "u");
+        assert_eq!(session.email.as_deref(), Some("e@example.com"));
         assert_eq!(session.expires_at, 42);
     }
 

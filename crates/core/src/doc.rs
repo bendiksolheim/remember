@@ -32,6 +32,7 @@
 //! migration pass required.
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 use loro::{ExportMode, LoroDoc, LoroMap, LoroMovableList, LoroValue, UndoManager, VersionVector};
 
@@ -427,7 +428,7 @@ impl Doc {
         let lists_map = self.doc.get_map("lists");
         let list_colors = self.doc.get_map("list_colors");
 
-        let list_rows: Vec<ListRow> =
+        let mut list_rows: Vec<ListRow> =
             dedup_list_order_ids(&self.doc.get_movable_list("list_order"))
                 .into_iter()
                 .map(|id| {
@@ -444,12 +445,18 @@ impl Doc {
                         .and_then(|v| as_i64(&v.get_deep_value()))
                         .map(|n| ListColor::from_index(n as u8))
                         .unwrap_or_default();
-                    ListRow { id, name, color }
+                    ListRow {
+                        id,
+                        name,
+                        color,
+                        task_count: 0,
+                    }
                 })
                 .collect();
 
         let mut rows = Vec::new();
         let mut active_count = 0u32;
+        let mut task_counts: HashMap<String, u32> = HashMap::new();
         for id in order_ids(&order) {
             let Some(entry) = tasks.get(&id) else {
                 continue; // defensive: order references a task `tasks` doesn't have
@@ -471,6 +478,7 @@ impl Doc {
             if !done {
                 active_count += 1;
             }
+            *task_counts.entry(list_id.clone()).or_default() += 1;
             if !matches_filter(done, view) || list_id != list {
                 continue;
             }
@@ -493,6 +501,10 @@ impl Doc {
                 list_id,
                 list_name,
             });
+        }
+
+        for list_row in &mut list_rows {
+            list_row.task_count = task_counts.get(&list_row.id).copied().unwrap_or(0);
         }
 
         Snapshot {

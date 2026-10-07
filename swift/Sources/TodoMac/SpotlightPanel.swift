@@ -58,6 +58,10 @@ final class SpotlightPanel: NSPanel {
         titlebarAppearsTransparent = true
         isMovableByWindowBackground = false
         hidesOnDeactivate = false
+        // Left out of screen sharing and recordings: the panel pops up on a
+        // global hotkey, so one press during a screen share would otherwise
+        // show the whole list to everyone watching.
+        sharingType = .none
 
         let effect = NSVisualEffectView()
         effect.material = .hudWindow

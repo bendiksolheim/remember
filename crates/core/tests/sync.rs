@@ -53,6 +53,35 @@ fn mark_pulled_persists_across_reopen() {
     assert_eq!(app2.last_pulled_seq().unwrap(), Some(42));
 }
 
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+#[test]
+fn fresh_app_has_never_synced() {
+    let dir = TempDir::new().unwrap();
+    let app = App::open(&db_path(&dir, "todo.sqlite3")).unwrap();
+    assert_eq!(app.last_synced_at().unwrap(), None);
+}
+
+#[test]
+fn mark_synced_records_now_and_persists_across_reopen() {
+    let dir = TempDir::new().unwrap();
+    let path = db_path(&dir, "todo.sqlite3");
+    let before = unix_now();
+    {
+        let app = App::open(&path).unwrap();
+        app.mark_synced().unwrap();
+    }
+    let after = unix_now();
+
+    let synced_at = App::open(&path).unwrap().last_synced_at().unwrap().unwrap();
+    assert!((before..=after).contains(&synced_at));
+}
+
 /// Even before the caller ever dispatches a `Command`, a fresh app already
 /// has something worth pushing — bootstrapping the default list is itself
 /// real document content, not a local-only concern — which matters for
@@ -224,6 +253,7 @@ fn binding_a_different_sync_account_resets_local_state() {
     app.set_current_list(a_list.clone()).unwrap();
     app.mark_pulled(7).unwrap();
     app.mark_pushed().unwrap();
+    app.mark_synced().unwrap();
     let a_peer = app.peer_id();
     let due_before = app.detect_due("x today").unwrap().due;
 
@@ -239,6 +269,8 @@ fn binding_a_different_sync_account_resets_local_state() {
     assert_ne!(snap.current_list, a_list);
     assert_ne!(app.peer_id(), a_peer);
     assert_eq!(app.last_pulled_seq().unwrap(), None);
+    // "Last synced" was about A; B has never synced here.
+    assert_eq!(app.last_synced_at().unwrap(), None);
     assert_eq!(app.sync_account().unwrap().as_deref(), Some("user-b"));
     // Nothing of A's counts as already pushed -- only B's fresh bootstrap
     // list is waiting.

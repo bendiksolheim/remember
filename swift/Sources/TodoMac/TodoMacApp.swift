@@ -14,5 +14,13 @@ struct TodoMacApp: SwiftUI.App {
         Settings {
             EmptyView()
         }
+        // The app menu (visible while the Settings window makes the app
+        // `.regular`) would otherwise open this scene's empty window.
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { appDelegate.showSettings() }
+                    .keyboardShortcut(",")
+            }
+        }
     }
 }

@@ -193,6 +193,14 @@ fn parse_target_flag(args: &[String]) -> Result<String> {
 
 /// bindings + build + `swift build` + assemble `Todo.app` + ad-hoc sign.
 fn mac() -> Result<()> {
+    mac_with_version(None)
+}
+
+/// `mac`, with a release's `version` written into the bundle's Info.plist.
+/// It has to happen here, before signing: editing the plist afterwards
+/// would invalidate the signature. `None` keeps the checked-in plist's
+/// "dev" values.
+fn mac_with_version(version: Option<&str>) -> Result<()> {
     require_macos("mac")?;
 
     let meta = cargo_metadata()?;
@@ -209,7 +217,7 @@ fn mac() -> Result<()> {
             .current_dir(meta.workspace_root.join("swift")),
     )?;
 
-    assemble_app(&meta)?;
+    assemble_app(&meta, version)?;
 
     run_cmd(
         Command::new("codesign").args([
@@ -226,7 +234,7 @@ fn mac() -> Result<()> {
     Ok(())
 }
 
-fn assemble_app(meta: &Metadata) -> Result<()> {
+fn assemble_app(meta: &Metadata, version: Option<&str>) -> Result<()> {
     let app = meta.workspace_root.join("build/Todo.app/Contents");
     let macos_dir = app.join("MacOS");
     let resources_dir = app.join("Resources");
@@ -234,11 +242,13 @@ fn assemble_app(meta: &Metadata) -> Result<()> {
     fs::create_dir_all(&resources_dir)
         .with_context(|| format!("creating {}", resources_dir.display()))?;
 
-    fs::copy(
-        meta.workspace_root.join("apple/Info-macOS.plist"),
-        app.join("Info.plist"),
-    )
-    .context("copying Info-macOS.plist")?;
+    let plist = fs::read_to_string(meta.workspace_root.join("apple/Info-macOS.plist"))
+        .context("reading Info-macOS.plist")?;
+    let plist = match version {
+        Some(version) => stamp_version(&plist, version)?,
+        None => plist,
+    };
+    fs::write(app.join("Info.plist"), plist).context("writing Info.plist")?;
 
     fs::copy(
         meta.workspace_root.join("swift/.build/release/TodoMac"),
@@ -292,9 +302,11 @@ fn device() -> Result<()> {
 fn package(args: &[String]) -> Result<()> {
     require_macos("package")?;
     let version = parse_version_flag(args)?;
+    // Before the slow build, not when the plist is written at the end of it.
+    validate_version(&version)?;
     let meta = cargo_metadata()?;
 
-    mac()?;
+    mac_with_version(Some(&version))?;
 
     let app_path = meta.workspace_root.join("build/Todo.app");
     let zip_path = meta
@@ -347,6 +359,46 @@ fn parse_version_flag(args: &[String]) -> Result<String> {
     bail!("usage: cargo xtask package --version <x>")
 }
 
+/// Dot-separated numbers ("1", "1.4", "1.4.2"), the only shape both
+/// `CFBundleShortVersionString` and `CFBundleVersion` accept. Same rule the
+/// release workflow checks the tag against.
+fn validate_version(version: &str) -> Result<()> {
+    let valid = version
+        .split('.')
+        .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
+    if !valid {
+        bail!("invalid version {version:?}: expected numbers separated by dots, e.g. 1.4");
+    }
+    Ok(())
+}
+
+/// `plist` (the checked-in Info.plist) with both version keys set to
+/// `version`, so the app can show which release it is.
+fn stamp_version(plist: &str, version: &str) -> Result<String> {
+    validate_version(version)?;
+    let plist = set_plist_string(plist, "CFBundleShortVersionString", version)?;
+    set_plist_string(&plist, "CFBundleVersion", version)
+}
+
+/// Replaces the `<string>` value that follows `<key>{key}</key>`. Plain text
+/// surgery, enough for the flat, hand-written plist this repo ships.
+fn set_plist_string(plist: &str, key: &str, value: &str) -> Result<String> {
+    let key_tag = format!("<key>{key}</key>");
+    let missing = || anyhow!("Info.plist has no string value for {key}");
+    let after_key = plist.find(&key_tag).ok_or_else(missing)? + key_tag.len();
+    let rest = &plist[after_key..];
+    let open = rest.find("<string>").ok_or_else(missing)?;
+    // Only whitespace may sit between the key and its value; anything else
+    // means the key's value isn't a string and `<string>` belongs to a
+    // later key.
+    if !rest[..open].trim().is_empty() {
+        return Err(missing());
+    }
+    let start = after_key + open + "<string>".len();
+    let end = start + plist[start..].find("</string>").ok_or_else(missing)?;
+    Ok(format!("{}{value}{}", &plist[..start], &plist[end..]))
+}
+
 fn test() -> Result<()> {
     run_cmd(Command::new("cargo").args([
         "nextest",
@@ -395,4 +447,66 @@ fn ci() -> Result<()> {
     test()?;
     cov()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PLIST: &str = "<dict>
+  <key>CFBundleVersion</key>           <string>0</string>
+  <key>CFBundleShortVersionString</key><string>dev</string>
+  <key>LSUIElement</key>               <true/>
+  <key>CFBundleName</key>              <string>Todo</string>
+</dict>";
+
+    #[test]
+    fn stamping_sets_both_version_keys_and_nothing_else() {
+        let stamped = stamp_version(PLIST, "1.4").unwrap();
+        assert_eq!(
+            stamped,
+            PLIST
+                .replace("<string>0</string>", "<string>1.4</string>")
+                .replace("<string>dev</string>", "<string>1.4</string>")
+        );
+    }
+
+    #[test]
+    fn the_checked_in_plist_can_be_stamped() {
+        let plist = include_str!("../../../apple/Info-macOS.plist");
+        let stamped = stamp_version(plist, "2.0.1").unwrap();
+        assert_eq!(stamped.matches("<string>2.0.1</string>").count(), 2);
+    }
+
+    #[test]
+    fn a_version_that_is_not_dot_separated_numbers_is_rejected() {
+        for bad in ["", "v1.4", "1..4", "1.4.", "1.4-beta", "1.4</string>"] {
+            assert!(stamp_version(PLIST, bad).is_err(), "{bad:?} was accepted");
+        }
+        assert!(validate_version("12.0.3").is_ok());
+    }
+
+    #[test]
+    fn a_missing_key_is_an_error() {
+        let err = set_plist_string(PLIST, "CFBundleIdentifier", "x").unwrap_err();
+        assert!(err.to_string().contains("CFBundleIdentifier"));
+    }
+
+    #[test]
+    fn a_key_whose_value_is_not_a_string_is_an_error_not_the_next_keys_value() {
+        let err = set_plist_string(PLIST, "LSUIElement", "x").unwrap_err();
+        assert!(err.to_string().contains("LSUIElement"));
+    }
+
+    #[test]
+    fn an_unterminated_string_is_an_error() {
+        let plist = "<key>CFBundleVersion</key><string>1";
+        assert!(set_plist_string(plist, "CFBundleVersion", "2").is_err());
+    }
+
+    #[test]
+    fn a_key_with_no_value_after_it_is_an_error() {
+        let plist = "<key>CFBundleVersion</key>";
+        assert!(set_plist_string(plist, "CFBundleVersion", "2").is_err());
+    }
 }

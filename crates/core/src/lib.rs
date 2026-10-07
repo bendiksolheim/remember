@@ -297,7 +297,7 @@ impl App {
     ///   everything, so todos made before ever signing in get uploaded.
     /// - Same account: a no-op.
     /// - A different account: resets local state — empty document, both
-    ///   sync cursors and the current list forgotten — so one account's
+    ///   sync cursors, the last sync time and the current list forgotten — so one account's
     ///   todos never leak into, or get uploaded to, another's. The previous
     ///   account's synced data stays on the server; its unpushed edits on
     ///   this device are lost. Also picks a fresh peer id: the new account
@@ -395,6 +395,22 @@ impl App {
     /// Records `seq` as the last row this device has imported.
     pub fn mark_pulled(&self, seq: i64) -> Result<(), CoreError> {
         self.shared.store.save_pulled_seq(seq)
+    }
+
+    /// Records "now" as the end of a sync round that finished without
+    /// errors. A sync layer calls this once a whole round (pull and push)
+    /// has succeeded.
+    pub fn mark_synced(&self) -> Result<(), CoreError> {
+        self.shared
+            .store
+            .save_last_synced_at(self.shared.clock.now())
+    }
+
+    /// When [`App::mark_synced`] last ran, in Unix seconds. `None` if it
+    /// never has, or not since a different account took over (see
+    /// [`App::bind_sync_account`]). Persisted, so it survives a relaunch.
+    pub fn last_synced_at(&self) -> Result<Option<i64>, CoreError> {
+        self.shared.store.load_last_synced_at()
     }
 }
 

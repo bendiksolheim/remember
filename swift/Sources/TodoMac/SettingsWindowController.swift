@@ -2,59 +2,146 @@ import AppKit
 import SwiftUI
 import TodoKit
 
-/// A normal titled window for settings — everything else in this target is
-/// the borderless `SpotlightPanel`, but sign-in/sync and list management
-/// don't belong hidden behind a global hotkey, so this is a standard window
-/// opened from the status-bar menu instead.
-/// Which tab `SettingsRootView` opens on — e.g. the capture panel's "+"
-/// pill wants Lists, the status-bar menu item wants Sync.
-enum SettingsTab: Hashable {
-    case sync
+/// The Settings window's tabs, in toolbar order. `rawValue` is the tab's
+/// index in `SettingsWindowController`'s `NSTabViewController`.
+enum SettingsTab: Int {
+    case general
     case lists
+    case account
 }
 
+/// Every tab gets the same size, so switching tabs never resizes the window
+/// (a tab that needs more room scrolls instead).
+enum SettingsMetrics {
+    static let size = NSSize(width: 520, height: 460)
+}
+
+/// Whether the global hotkey could be registered at launch, for the General
+/// tab to show -- a failed registration is otherwise invisible to the user.
+struct HotKeyStatus {
+    let shortcut: String
+    let isRegistered: Bool
+}
+
+/// Requests from outside the window to the tab views inside it.
 @MainActor
-final class SettingsWindowController: NSWindowController {
-    /// `initialTab` only takes effect the moment this controller (and its
-    /// `SettingsRootView`) is first created — `AppDelegate` reuses a single
-    /// instance across opens, so re-showing an already-open window doesn't
-    /// jump it to a different tab, only the very first open picks one.
-    convenience init(model: TodoModel, initialTab: SettingsTab = .sync) {
-        let hosting = NSHostingController(rootView: SettingsRootView(initialTab: initialTab).environment(model))
-        let window = NSWindow(contentViewController: hosting)
-        window.title = "Todo Settings"
+@Observable
+final class SettingsNavigation {
+    /// Set when the capture panel's "+" pill opens Settings: the Lists tab
+    /// puts the cursor in its "New list" field, then clears this.
+    var focusNewList = false
+}
+
+/// A normal titled window with toolbar tabs (General, Lists, Account), the
+/// standard macOS settings layout. Everything else in this target is the
+/// borderless `SpotlightPanel`; settings are opened from the status-bar
+/// menu, the app menu's "Settings…" (⌘,), or the panel's "+" pill.
+///
+/// The app is `.accessory` (no Dock icon, not in ⌘Tab), so a window that
+/// falls behind another app's windows could only be brought back from the
+/// menu bar. `AppDelegate` therefore makes the app `.regular` while this
+/// window is open and switches back in `onClose`.
+@MainActor
+final class SettingsWindowController: NSWindowController, NSWindowDelegate {
+    private let tabs: NSTabViewController
+    private let navigation: SettingsNavigation
+    private let onClose: () -> Void
+
+    init(model: TodoModel, hotKey: HotKeyStatus, onClose: @escaping () -> Void) {
+        self.onClose = onClose
+        let navigation = SettingsNavigation()
+        self.navigation = navigation
+
+        let tabs = NSTabViewController()
+        tabs.tabStyle = .toolbar
+        // The window takes its title from this controller. By default that
+        // is the selected tab's view controller's title, and the hosting
+        // controllers have none, so the window said "Untitled".
+        tabs.canPropagateSelectedChildViewControllerTitle = false
+        let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Todo"
+        tabs.title = "\(appName) Settings"
+        tabs.addTabViewItem(SettingsWindowController.tab(
+            GeneralSettingsView(hotKey: hotKey),
+            label: "General", symbol: "gearshape", model: model, navigation: navigation
+        ))
+        tabs.addTabViewItem(SettingsWindowController.tab(
+            ListsSettingsView(),
+            label: "Lists", symbol: "list.bullet", model: model, navigation: navigation
+        ))
+        tabs.addTabViewItem(SettingsWindowController.tab(
+            AccountSettingsView(),
+            label: "Account", symbol: "person.crop.circle", model: model, navigation: navigation
+        ))
+        self.tabs = tabs
+
+        let window = SettingsWindow(contentViewController: tabs)
         window.styleMask = [.titled, .closable]
+        window.toolbarStyle = .preference
+        window.title = "\(appName) Settings"
         window.isReleasedWhenClosed = false
-        self.init(window: window)
+        super.init(window: window)
+        window.delegate = self
     }
 
-    /// The app is `.accessory` (no Dock icon, doesn't auto-activate) — this
-    /// window needs an explicit `activate` or it can open behind whatever
-    /// app currently has focus.
-    func show() {
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    private static func tab(
+        _ view: some SwiftUI.View,
+        label: String,
+        symbol: String,
+        model: TodoModel,
+        navigation: SettingsNavigation
+    ) -> NSTabViewItem {
+        let hosting = NSHostingController(rootView: view
+            .frame(width: SettingsMetrics.size.width, height: SettingsMetrics.size.height)
+            .environment(model)
+            .environment(navigation))
+        // A fixed size, not one SwiftUI derives from the content: that is
+        // what made the old window grow on Lists and never shrink back.
+        hosting.sizingOptions = []
+        hosting.preferredContentSize = SettingsMetrics.size
+
+        let item = NSTabViewItem(viewController: hosting)
+        item.label = label
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        return item
+    }
+
+    /// Brings the window up, on `tab` if given; otherwise on whichever tab
+    /// it was last showing (General the first time).
+    func show(tab: SettingsTab? = nil, focusNewList: Bool = false) {
+        if let tab {
+            tabs.selectedTabViewItemIndex = tab.rawValue
+        }
+        if focusNewList {
+            navigation.focusNewList = true
+        }
+        // Centered only when it opens, never yanked back to the middle when
+        // it's already on screen somewhere the user put it.
+        if window?.isVisible != true {
+            window?.center()
+        }
         NSApp.activate(ignoringOtherApps: true)
-        window?.center()
         window?.makeKeyAndOrderFront(nil)
     }
+
+    func windowWillClose(_ notification: Notification) {
+        onClose()
+    }
 }
 
-/// Tabs between sync settings and list management -- the two things this
-/// window exists for.
-private struct SettingsRootView: SwiftUI.View {
-    @State private var selection: SettingsTab
-
-    init(initialTab: SettingsTab) {
-        _selection = State(initialValue: initialTab)
-    }
-
-    var body: some SwiftUI.View {
-        TabView(selection: $selection) {
-            SyncSettingsView()
-                .tabItem { Text("Sync") }
-                .tag(SettingsTab.sync)
-            ListsSettingsView()
-                .tabItem { Text("Lists") }
-                .tag(SettingsTab.lists)
+/// ⌘W closes the window even if the app's main menu has no Close item
+/// (it has none of its own while the app is `.accessory`).
+private final class SettingsWindow: NSWindow {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           event.charactersIgnoringModifiers == "w" {
+            performClose(nil)
+            return true
         }
+        return super.performKeyEquivalent(with: event)
     }
 }

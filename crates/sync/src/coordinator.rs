@@ -300,6 +300,7 @@ mod tests {
             access_token: token.to_string(),
             refresh_token: "refresh".to_string(),
             user_id: "user".to_string(),
+            email: None,
             expires_at: i64::MAX,
         }
     }
