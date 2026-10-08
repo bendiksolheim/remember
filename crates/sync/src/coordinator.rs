@@ -277,7 +277,25 @@ mod tests {
 
     use super::*;
     use crate::auth::AuthClient;
-    use crate::transport::{InMemoryTransport, SyncTransport};
+    use crate::transport::{InMemoryTransport, ScriptedTransport, SyncTransport};
+
+    /// A listener that hands each value it is called with to `tx`. Shared, so
+    /// a test asserting its listener never fires leaves no unrun closure.
+    fn forward<T: Send + 'static>(tx: mpsc::Sender<T>) -> impl Fn(T) + Send + Sync + 'static {
+        move |value| tx.send(value).unwrap()
+    }
+
+    #[test]
+    fn lock_recovers_a_mutex_poisoned_by_a_panicking_holder() {
+        let mutex = Mutex::new(7);
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = mutex.lock().unwrap();
+            panic!("poisons the mutex");
+        });
+        assert!(mutex.is_poisoned());
+
+        assert_eq!(*lock(&mutex), 7);
+    }
 
     fn open(dir: &TempDir, name: &str) -> Arc<App> {
         Arc::new(App::open(dir.path().join(name).to_str().unwrap()).unwrap())
@@ -464,7 +482,7 @@ mod tests {
         );
 
         let (tx, rx) = mpsc::channel();
-        coordinator.set_listener(move |result| tx.send(result).unwrap());
+        coordinator.set_listener(forward(tx));
         coordinator.set_session(Some(session("tok")));
         coordinator.sync_soon();
 
@@ -522,39 +540,17 @@ mod tests {
         assert!(lock(&state.last_attempt).is_some()); // still records the attempt time
     }
 
-    /// A transport whose pull announces it has started, then stalls --
-    /// stands in for a slow network round-trip, so a test can change the
-    /// session while a sync is provably in flight. Records the access token
-    /// each pull was made with.
-    struct StallingTransport {
-        started: Mutex<mpsc::Sender<()>>,
-        stall: Duration,
-        tokens: Mutex<Vec<String>>,
-    }
-
-    impl SyncTransport for StallingTransport {
-        fn push(&self, _: &str, _: u64, _: Vec<u8>) -> Result<(), SyncError> {
-            Ok(())
-        }
-
-        fn pull(&self, token: &str, _: Option<i64>) -> Result<crate::PullPage, SyncError> {
-            lock(&self.tokens).push(token.to_string());
-            let _ = lock(&self.started).send(());
-            thread::sleep(self.stall);
-            Ok(crate::PullPage::default())
-        }
-
-        fn compact(&self, _: &str, _: i64, _: Vec<u8>) -> Result<bool, SyncError> {
-            unreachable!("an empty log is never compacted")
-        }
-    }
-
-    fn stalling(stall: Duration) -> (Arc<StallingTransport>, mpsc::Receiver<()>) {
+    /// A transport whose pull announces it has started, with its access
+    /// token, then stalls -- stands in for a slow network round-trip, so a
+    /// test can change the session while a sync is provably in flight.
+    fn stalling(stall: Duration) -> (Arc<ScriptedTransport>, mpsc::Receiver<String>) {
         let (tx, rx) = mpsc::channel();
-        let transport = StallingTransport {
-            started: Mutex::new(tx),
-            stall,
-            tokens: Mutex::new(Vec::new()),
+        let transport = ScriptedTransport {
+            during_pull: Some(Box::new(move |token| {
+                let _ = tx.send(token.to_string());
+                thread::sleep(stall);
+            })),
+            ..Default::default()
         };
         (Arc::new(transport), rx)
     }
@@ -570,7 +566,7 @@ mod tests {
             fast_config(),
         );
         let (tx, rx) = mpsc::channel();
-        coordinator.set_session_listener(move |session| tx.send(session).unwrap());
+        coordinator.set_session_listener(forward(tx));
         coordinator.set_session(Some(session("tok")));
         coordinator.sync_soon();
 
@@ -686,18 +682,16 @@ mod tests {
         tokio::task::spawn_blocking(move || {
             let (transport, started) = stalling(Duration::from_millis(100));
             let dir = TempDir::new().unwrap();
-            let coordinator = refreshing_coordinator(&dir, uri, transport.clone());
+            let coordinator = refreshing_coordinator(&dir, uri, transport);
             coordinator.set_session(Some(expiring()));
             coordinator.sync_soon();
 
-            started.recv_timeout(Duration::from_secs(2)).unwrap();
+            let first = started.recv_timeout(Duration::from_secs(2)).unwrap();
             coordinator.sync_soon(); // "Sync Now", mid-round
-            started.recv_timeout(Duration::from_secs(2)).unwrap();
+            let second = started.recv_timeout(Duration::from_secs(2)).unwrap();
 
-            assert_eq!(
-                *lock(&transport.tokens),
-                vec!["refreshed-access", "refreshed-access"]
-            );
+            assert_eq!(first, "refreshed-access");
+            assert_eq!(second, "refreshed-access");
             drop(coordinator);
         })
         .await
@@ -714,7 +708,7 @@ mod tests {
             let dir = TempDir::new().unwrap();
             let coordinator = refreshing_coordinator(&dir, uri, transport);
             let (tx, rx) = mpsc::channel();
-            coordinator.set_session_listener(move |session| tx.send(session).unwrap());
+            coordinator.set_session_listener(forward(tx));
             coordinator.set_session(Some(expiring()));
             coordinator.sync_soon();
 
@@ -729,16 +723,10 @@ mod tests {
         .unwrap();
     }
 
-    struct PullFails;
-    impl SyncTransport for PullFails {
-        fn push(&self, _: &str, _: u64, _: Vec<u8>) -> Result<(), SyncError> {
-            Ok(())
-        }
-        fn pull(&self, _: &str, _: Option<i64>) -> Result<crate::PullPage, SyncError> {
-            Err(SyncError::Transport("boom".to_string()))
-        }
-        fn compact(&self, _: &str, _: i64, _: Vec<u8>) -> Result<bool, SyncError> {
-            unreachable!("compact after a failed pull")
+    fn pull_fails() -> ScriptedTransport {
+        ScriptedTransport {
+            pull: Some(Box::new(|| Err(SyncError::Transport("boom".to_string())))),
+            ..Default::default()
         }
     }
 
@@ -751,11 +739,11 @@ mod tests {
         let uri = server.uri();
         tokio::task::spawn_blocking(move || {
             let dir = TempDir::new().unwrap();
-            let coordinator = refreshing_coordinator(&dir, uri, Arc::new(PullFails));
+            let coordinator = refreshing_coordinator(&dir, uri, Arc::new(pull_fails()));
             let (session_tx, session_rx) = mpsc::channel();
-            coordinator.set_session_listener(move |session| session_tx.send(session).unwrap());
+            coordinator.set_session_listener(forward(session_tx));
             let (result_tx, result_rx) = mpsc::channel();
-            coordinator.set_listener(move |result| result_tx.send(result).unwrap());
+            coordinator.set_listener(forward(result_tx));
             coordinator.set_session(Some(expiring()));
             coordinator.sync_soon();
 
@@ -786,7 +774,7 @@ mod tests {
             let dir = TempDir::new().unwrap();
             let coordinator = refreshing_coordinator(&dir, uri, transport);
             let (tx, rx) = mpsc::channel();
-            coordinator.set_listener(move |result| tx.send(result).unwrap());
+            coordinator.set_listener(forward(tx));
             coordinator.set_session(Some(expiring()));
             coordinator.sync_soon();
 
@@ -813,9 +801,9 @@ mod tests {
             let dir = TempDir::new().unwrap();
             let coordinator = refreshing_coordinator(&dir, uri, transport);
             let (session_tx, session_rx) = mpsc::channel();
-            coordinator.set_session_listener(move |session| session_tx.send(session).unwrap());
+            coordinator.set_session_listener(forward(session_tx));
             let (result_tx, result_rx) = mpsc::channel();
-            coordinator.set_listener(move |result| result_tx.send(result).unwrap());
+            coordinator.set_listener(forward(result_tx));
             coordinator.set_session(Some(expiring()));
             coordinator.sync_soon();
 
@@ -947,7 +935,7 @@ mod tests {
             fast_config(),
         );
         let (tx, rx) = mpsc::channel();
-        coordinator.set_session_listener(move |session| tx.send(session).unwrap());
+        coordinator.set_session_listener(forward(tx));
         coordinator.set_session(Some(session("tok")));
         coordinator.sync_soon();
 

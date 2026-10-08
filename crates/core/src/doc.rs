@@ -977,6 +977,171 @@ mod tests {
         assert_eq!(snap.rows[0].list_id, work);
     }
 
+    /// Adds "Work" and returns its id.
+    fn add_work_list(doc: &mut Doc, ids: &crate::clock::SeqIdSource) -> String {
+        doc.apply(
+            Command::AddList {
+                name: "Work".to_string(),
+                after: None,
+            },
+            &FixedClock(0),
+            ids,
+        )
+        .unwrap();
+        // `after: None` inserts at the top, so "Work" is lists[0].
+        doc.read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0))
+            .lists[0]
+            .id
+            .clone()
+    }
+
+    /// Adds a task at the top of `list_id` and returns its id.
+    fn add_task(
+        doc: &mut Doc,
+        ids: &crate::clock::SeqIdSource,
+        title: &str,
+        list_id: &str,
+    ) -> String {
+        doc.apply(
+            Command::Add {
+                title: title.to_string(),
+                after: None,
+                due: None,
+                list_id: Some(list_id.to_string()),
+            },
+            &FixedClock(0),
+            ids,
+        )
+        .unwrap();
+        doc.read(ViewFilter::All, list_id, &FixedClock(0)).rows[0]
+            .id
+            .clone()
+    }
+
+    #[test]
+    fn delete_list_takes_its_tasks_with_it_and_leaves_the_rest() {
+        let mut doc = Doc::new(1).unwrap();
+        let ids = crate::clock::SeqIdSource::new();
+        let work = add_work_list(&mut doc, &ids);
+        add_task(&mut doc, &ids, "work task", &work);
+        let kept = add_task(&mut doc, &ids, "default task", DEFAULT_LIST_ID);
+        let titles = |doc: &Doc| -> Vec<String> {
+            doc.read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0))
+                .rows
+                .into_iter()
+                .map(|r| r.title)
+                .collect()
+        };
+        // Reading one list leaves out the other's tasks.
+        assert_eq!(titles(&doc), vec!["default task"]);
+
+        doc.apply(Command::DeleteList { id: work }, &FixedClock(0), &ids)
+            .unwrap();
+
+        assert_eq!(titles(&doc), vec!["default task"]);
+        assert_eq!(order_ids(&doc.doc.get_movable_list("order")), vec![kept]);
+    }
+
+    #[test]
+    fn set_list_to_an_unknown_list_is_not_found() {
+        let mut doc = Doc::new(1).unwrap();
+        let ids = crate::clock::SeqIdSource::new();
+        let a = add_task(&mut doc, &ids, "a", DEFAULT_LIST_ID);
+
+        let result = doc.apply(
+            Command::SetList {
+                id: a,
+                list_id: "nope".to_string(),
+            },
+            &FixedClock(0),
+            &ids,
+        );
+
+        assert!(matches!(result, Err(CoreError::NotFound(id)) if id == "nope"));
+    }
+
+    #[test]
+    fn set_list_to_the_list_a_task_is_already_in_commits_nothing() {
+        let mut doc = Doc::new(1).unwrap();
+        let ids = crate::clock::SeqIdSource::new();
+        let work = add_work_list(&mut doc, &ids);
+        let a = add_task(&mut doc, &ids, "a", &work);
+        let revision = doc.revision;
+
+        doc.apply(
+            Command::SetList {
+                id: a,
+                list_id: work,
+            },
+            &FixedClock(0),
+            &ids,
+        )
+        .unwrap();
+
+        assert_eq!(doc.revision, revision);
+    }
+
+    #[test]
+    fn set_list_moves_a_task_to_the_top() {
+        let mut doc = Doc::new(1).unwrap();
+        let ids = crate::clock::SeqIdSource::new();
+        let work = add_work_list(&mut doc, &ids);
+        let a = add_task(&mut doc, &ids, "a", DEFAULT_LIST_ID);
+        add_task(&mut doc, &ids, "b", DEFAULT_LIST_ID); // now above `a`
+
+        doc.apply(
+            Command::SetList {
+                id: a.clone(),
+                list_id: work,
+            },
+            &FixedClock(0),
+            &ids,
+        )
+        .unwrap();
+
+        assert_eq!(order_ids(&doc.doc.get_movable_list("order"))[0], a);
+    }
+
+    #[test]
+    fn set_list_on_a_task_missing_from_the_order_still_changes_its_list() {
+        let mut doc = Doc::new(1).unwrap();
+        let ids = crate::clock::SeqIdSource::new();
+        // A task entry with no order entry, as a merge can leave behind.
+        let task = doc.doc.get_map("tasks").ensure_mergeable_map("x").unwrap();
+        task.insert("title", "a task").unwrap();
+        doc.doc.commit();
+        doc.apply(
+            Command::AddList {
+                name: "Work".to_string(),
+                after: None,
+            },
+            &FixedClock(0),
+            &ids,
+        )
+        .unwrap();
+        let work = doc
+            .read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0))
+            .lists[0]
+            .id
+            .clone();
+
+        doc.apply(
+            Command::SetList {
+                id: "x".to_string(),
+                list_id: work.clone(),
+            },
+            &FixedClock(0),
+            &ids,
+        )
+        .unwrap();
+
+        assert_eq!(
+            task.get("list_id").unwrap().get_deep_value(),
+            work.as_str().into()
+        );
+        assert!(order_ids(&doc.doc.get_movable_list("order")).is_empty());
+    }
+
     #[test]
     fn add_list_assigns_each_list_a_distinct_color_up_to_the_palette_size() {
         let mut doc = Doc::new(1).unwrap();

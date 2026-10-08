@@ -323,3 +323,21 @@ impl Drop for App {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lock_recovers_a_mutex_poisoned_by_a_panicking_holder() {
+        let mutex = Mutex::new(7);
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = mutex.lock().unwrap();
+            panic!("poisons the mutex");
+        });
+        assert!(mutex.is_poisoned());
+
+        assert_eq!(*lock(&mutex), 7);
+    }
+}

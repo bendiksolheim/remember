@@ -461,7 +461,7 @@ fn cov() -> Result<()> {
         "--ignore-filename-regex",
         r"crates/ffi/src/lib\.rs",
         "--fail-under-lines",
-        "99",
+        "100",
         "--html",
         "--open",
     ]))

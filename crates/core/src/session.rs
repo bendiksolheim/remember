@@ -82,11 +82,14 @@ impl Session {
         }
 
         let snapshot = self.doc.read(ViewFilter::All, deleted_id, clock);
-        let fallback_id = snapshot
-            .lists
-            .first()
-            .map(|list| list.id.clone())
-            .ok_or_else(|| CoreError::Document("no lists remain after delete".to_string()))?;
+        let fallback_id =
+            snapshot
+                .lists
+                .first()
+                .map(|list| list.id.clone())
+                .ok_or(CoreError::Document(
+                    "no lists remain after delete".to_string(),
+                ))?;
 
         self.current_list = fallback_id;
         Ok(true)

@@ -133,7 +133,7 @@ impl Store {
     }
 
     pub fn save_current_list(&self, list_id: &str) -> Result<(), CoreError> {
-        self.save_meta_string("current_list", Some(list_id))
+        self.save_meta_string("current_list", list_id)
     }
 
     /// The sync account (user id) this install's local data and sync
@@ -143,7 +143,7 @@ impl Store {
     }
 
     pub fn save_sync_account(&self, account: &str) -> Result<(), CoreError> {
-        self.save_meta_string("sync_account", Some(account))
+        self.save_meta_string("sync_account", account)
     }
 
     /// Hands this install over to a different sync account, atomically:
@@ -221,24 +221,15 @@ impl Store {
             .transpose()
     }
 
-    /// `None` deletes the key (rather than storing an empty value) so
-    /// `load_meta_string` unambiguously reports "never set" afterward.
-    fn save_meta_string(&self, key: &str, value: Option<&str>) -> Result<(), CoreError> {
-        let conn = self.lock();
-        match value {
-            Some(v) => conn
-                .execute(
-                    "INSERT INTO meta (key, value) VALUES (?1, ?2)
-                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    (key, v.as_bytes()),
-                )
-                .map(|_| ())
-                .map_err(store_err),
-            None => conn
-                .execute("DELETE FROM meta WHERE key = ?1", [key])
-                .map(|_| ())
-                .map_err(store_err),
-        }
+    fn save_meta_string(&self, key: &str, value: &str) -> Result<(), CoreError> {
+        self.lock()
+            .execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value.as_bytes()),
+            )
+            .map(|_| ())
+            .map_err(store_err)
     }
 
     pub fn load_snapshot(&self) -> Result<Option<Vec<u8>>, CoreError> {
@@ -260,5 +251,24 @@ impl Store {
         )
         .map_err(store_err)?;
         tx.commit().map_err(store_err)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panic_while_holding_the_connection_does_not_lock_the_store_up() {
+        let store = Store::open(":memory:").unwrap();
+        store.save_current_list("work").unwrap();
+        let _ = std::panic::catch_unwind(|| {
+            let _conn = store.conn.lock().unwrap();
+            panic!("poisons the connection mutex");
+        });
+        assert!(store.conn.is_poisoned());
+
+        assert_eq!(store.load_current_list().unwrap().as_deref(), Some("work"));
     }
 }

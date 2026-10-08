@@ -317,6 +317,53 @@ impl SyncTransport for InMemoryTransport {
 }
 
 #[cfg(test)]
+type PullHook = Box<dyn Fn(&str) + Send + Sync>;
+#[cfg(test)]
+type PullAnswer = Box<dyn Fn() -> Result<PullPage, SyncError> + Send + Sync>;
+
+/// An [`InMemoryTransport`] with a failure or a hook spliced into one of
+/// its calls. Tests share this one double rather than each writing its own,
+/// so a test spells out only how its transport differs from a working one.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct ScriptedTransport {
+    pub inner: InMemoryTransport,
+    /// Runs as each pull is on the wire, with that pull's token.
+    pub during_pull: Option<PullHook>,
+    /// Answers each pull in place of `inner`.
+    pub pull: Option<PullAnswer>,
+    pub fail_push: bool,
+    pub fail_compact: bool,
+}
+
+#[cfg(test)]
+impl SyncTransport for ScriptedTransport {
+    fn push(&self, token: &str, device_id: u64, payload: Vec<u8>) -> Result<(), SyncError> {
+        if self.fail_push {
+            return Err(SyncError::Transport("push failed".to_string()));
+        }
+        self.inner.push(token, device_id, payload)
+    }
+
+    fn pull(&self, token: &str, since_seq: Option<i64>) -> Result<PullPage, SyncError> {
+        if let Some(during_pull) = &self.during_pull {
+            during_pull(token);
+        }
+        match &self.pull {
+            Some(pull) => pull(),
+            None => self.inner.pull(token, since_seq),
+        }
+    }
+
+    fn compact(&self, token: &str, as_of_seq: i64, payload: Vec<u8>) -> Result<bool, SyncError> {
+        if self.fail_compact {
+            return Err(SyncError::Transport("compact failed".to_string()));
+        }
+        self.inner.compact(token, as_of_seq, payload)
+    }
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
@@ -385,6 +432,28 @@ mod tests {
     fn in_memory_transport_pull_past_the_end_is_empty() {
         let t = with_rows(InMemoryTransport::new(), &[b"a"]);
         assert!(t.pull("tok", Some(0)).unwrap().rows.is_empty());
+    }
+
+    #[test]
+    fn in_memory_transport_survives_a_panic_while_its_state_is_locked() {
+        let t = with_rows(InMemoryTransport::new(), &[b"a"]);
+        let _ = std::panic::catch_unwind(|| {
+            let _state = t.state.lock().unwrap();
+            panic!("poisons the state mutex");
+        });
+        assert!(t.state.is_poisoned());
+
+        assert_eq!(t.log_rows().len(), 1);
+    }
+
+    #[test]
+    fn scripted_transport_with_nothing_scripted_is_its_inner_transport() {
+        let t = ScriptedTransport::default();
+        t.push("tok", 1, b"a".to_vec()).unwrap();
+
+        assert_eq!(payloads(&t.pull("tok", None).unwrap()), vec![b"a"]);
+        assert!(t.compact("tok", 0, b"snap".to_vec()).unwrap());
+        assert_eq!(t.inner.snapshot().unwrap().as_of_seq, 0);
     }
 
     #[test]
@@ -534,12 +603,10 @@ mod tests {
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn an_unreachable_server_is_a_transport_error() {
-            let server = MockServer::start().await;
-            let base = server.uri();
-            drop(server);
-
-            let result = tokio::task::spawn_blocking(move || {
-                HttpTransport::new(base, "anon-key").pull("tok", None)
+            // Port 1 on loopback: refused immediately. A dropped `MockServer`
+            // would not do -- wiremock pools them, so its port keeps answering.
+            let result = tokio::task::spawn_blocking(|| {
+                HttpTransport::new("http://127.0.0.1:1", "anon-key").pull("tok", None)
             })
             .await
             .unwrap();

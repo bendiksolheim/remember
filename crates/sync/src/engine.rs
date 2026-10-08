@@ -144,7 +144,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::transport::InMemoryTransport;
+    use crate::transport::{InMemoryTransport, ScriptedTransport};
 
     fn open(dir: &TempDir, name: &str) -> App {
         App::open(dir.path().join(name).to_str().unwrap()).unwrap()
@@ -257,44 +257,20 @@ mod tests {
         assert_eq!(device_b.current().rows.len(), 2);
     }
 
-    struct PullFails;
-    impl SyncTransport for PullFails {
-        fn push(&self, _: &str, _: u64, _: Vec<u8>) -> Result<(), SyncError> {
-            Err(SyncError::Transport(
-                "push should not be reached".to_string(),
-            ))
-        }
-        fn pull(&self, _: &str, _: Option<i64>) -> Result<crate::PullPage, SyncError> {
-            Err(SyncError::Transport("boom".to_string()))
-        }
-        fn compact(&self, _: &str, _: i64, _: Vec<u8>) -> Result<bool, SyncError> {
-            unreachable!("compact after a failed pull")
-        }
-    }
-
-    struct PushFails;
-    impl SyncTransport for PushFails {
-        fn push(&self, _: &str, _: u64, _: Vec<u8>) -> Result<(), SyncError> {
-            Err(SyncError::Transport("boom".to_string()))
-        }
-        fn pull(&self, _: &str, _: Option<i64>) -> Result<crate::PullPage, SyncError> {
-            Ok(crate::PullPage::default())
-        }
-        fn compact(&self, _: &str, _: i64, _: Vec<u8>) -> Result<bool, SyncError> {
-            unreachable!("compact after a failed push")
-        }
-    }
-
     #[test]
     fn sync_once_surfaces_a_pull_failure_without_pushing() {
         let dir = TempDir::new().unwrap();
         let app = open(&dir, "a.sqlite3");
         add(&app, "local task");
-        // `PullFails::push` errors differently, so reaching it would show.
-        let engine = SyncEngine::new(Arc::new(PullFails), unused_auth());
+        let transport = Arc::new(ScriptedTransport {
+            pull: Some(Box::new(|| Err(SyncError::Transport("boom".to_string())))),
+            ..Default::default()
+        });
+        let engine = SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>, unused_auth());
 
         let result = engine.sync_once(&app, &fresh_session("tok"));
         assert!(matches!(result, Err(SyncError::Transport(m)) if m == "boom"));
+        assert!(transport.inner.log_rows().is_empty());
         assert_eq!(app.last_synced_at().unwrap(), None);
     }
 
@@ -303,7 +279,11 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let app = open(&dir, "a.sqlite3");
         add(&app, "local task"); // ensures has_unpushed_changes() is true
-        let engine = SyncEngine::new(Arc::new(PushFails), unused_auth());
+        let transport = ScriptedTransport {
+            fail_push: true,
+            ..Default::default()
+        };
+        let engine = SyncEngine::new(Arc::new(transport), unused_auth());
 
         let result = engine.sync_once(&app, &fresh_session("tok"));
         assert!(matches!(result.err().unwrap(), SyncError::Transport(_)));
@@ -364,29 +344,13 @@ mod tests {
 
     /// Stands in for another round (for a different account) resetting
     /// local state while this one's pull is still on the wire.
-    struct AccountSwitchingTransport {
-        app: Arc<App>,
-        inner: InMemoryTransport,
-    }
-
-    impl SyncTransport for AccountSwitchingTransport {
-        fn push(&self, token: &str, device_id: u64, payload: Vec<u8>) -> Result<(), SyncError> {
-            self.inner.push(token, device_id, payload)
-        }
-
-        fn pull(&self, token: &str, since_seq: Option<i64>) -> Result<crate::PullPage, SyncError> {
-            let page = self.inner.pull(token, since_seq)?;
-            self.app.bind_sync_account("someone-else").unwrap();
-            Ok(page)
-        }
-
-        fn compact(
-            &self,
-            token: &str,
-            as_of_seq: i64,
-            payload: Vec<u8>,
-        ) -> Result<bool, SyncError> {
-            self.inner.compact(token, as_of_seq, payload)
+    fn account_switching(app: &Arc<App>) -> ScriptedTransport {
+        let app = Arc::clone(app);
+        ScriptedTransport {
+            during_pull: Some(Box::new(move |_| {
+                app.bind_sync_account("someone-else").unwrap();
+            })),
+            ..Default::default()
         }
     }
 
@@ -396,10 +360,7 @@ mod tests {
         let elsewhere = open(&dir, "elsewhere.sqlite3");
         add(&elsewhere, "old account's task");
         let app = Arc::new(open(&dir, "a.sqlite3"));
-        let transport = AccountSwitchingTransport {
-            app: Arc::clone(&app),
-            inner: InMemoryTransport::new(),
-        };
+        let transport = account_switching(&app);
         transport
             .inner
             .push(
@@ -421,10 +382,7 @@ mod tests {
     fn a_round_whose_account_changes_before_the_push_pushes_nothing() {
         let dir = TempDir::new().unwrap();
         let app = Arc::new(open(&dir, "a.sqlite3"));
-        let transport = Arc::new(AccountSwitchingTransport {
-            app: Arc::clone(&app),
-            inner: InMemoryTransport::new(),
-        });
+        let transport = Arc::new(account_switching(&app));
         let engine = SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>, unused_auth());
 
         // Empty log, so the loop never runs -- the check before the push
@@ -558,24 +516,21 @@ mod tests {
     }
 
     /// Reports a log long enough to compact, and fails the compaction.
-    struct CompactFails;
-    impl SyncTransport for CompactFails {
-        fn push(&self, _: &str, _: u64, _: Vec<u8>) -> Result<(), SyncError> {
-            Ok(())
-        }
-        fn pull(&self, _: &str, _: Option<i64>) -> Result<crate::PullPage, SyncError> {
-            Ok(crate::PullPage {
-                // A row, so `compact` has a cursor to compact up to.
-                rows: vec![crate::PulledUpdate {
-                    seq: 0,
-                    payload: open_scratch_export(),
-                }],
-                log_len: COMPACT_AFTER_ROWS + 1,
-                ..Default::default()
-            })
-        }
-        fn compact(&self, _: &str, _: i64, _: Vec<u8>) -> Result<bool, SyncError> {
-            Err(SyncError::Transport("boom".to_string()))
+    fn compact_fails() -> ScriptedTransport {
+        ScriptedTransport {
+            pull: Some(Box::new(|| {
+                Ok(crate::PullPage {
+                    // A row, so `compact` has a cursor to compact up to.
+                    rows: vec![crate::PulledUpdate {
+                        seq: 0,
+                        payload: open_scratch_export(),
+                    }],
+                    log_len: COMPACT_AFTER_ROWS + 1,
+                    ..Default::default()
+                })
+            })),
+            fail_compact: true,
+            ..Default::default()
         }
     }
 
@@ -589,27 +544,45 @@ mod tests {
     fn a_failed_compaction_does_not_fail_the_round() {
         let dir = TempDir::new().unwrap();
         let app = open(&dir, "a.sqlite3");
-        let engine = SyncEngine::new(Arc::new(CompactFails), unused_auth());
+        let engine = SyncEngine::new(Arc::new(compact_fails()), unused_auth());
 
         engine.sync_once(&app, &fresh_session("tok")).unwrap();
 
         assert!(app.last_synced_at().unwrap().is_some());
     }
 
+    #[test]
+    fn a_long_log_with_nothing_pulled_has_no_cursor_to_compact_up_to() {
+        let dir = TempDir::new().unwrap();
+        let app = open(&dir, "a.sqlite3");
+        let transport = ScriptedTransport {
+            pull: Some(Box::new(|| {
+                Ok(crate::PullPage {
+                    log_len: COMPACT_AFTER_ROWS + 1,
+                    ..Default::default()
+                })
+            })),
+            fail_compact: true,
+            ..Default::default()
+        };
+        let engine = SyncEngine::new(Arc::new(transport), unused_auth());
+
+        engine.sync_once(&app, &fresh_session("tok")).unwrap();
+
+        assert_eq!(app.last_pulled_seq().unwrap(), None);
+        assert!(app.last_synced_at().unwrap().is_some());
+    }
+
     /// Claims there's more to pull but never hands any of it over.
-    struct EndlessEmptyPages;
-    impl SyncTransport for EndlessEmptyPages {
-        fn push(&self, _: &str, _: u64, _: Vec<u8>) -> Result<(), SyncError> {
-            Ok(())
-        }
-        fn pull(&self, _: &str, _: Option<i64>) -> Result<crate::PullPage, SyncError> {
-            Ok(crate::PullPage {
-                has_more: true,
-                ..Default::default()
-            })
-        }
-        fn compact(&self, _: &str, _: i64, _: Vec<u8>) -> Result<bool, SyncError> {
-            unreachable!("an empty log is never compacted")
+    fn endless_empty_pages() -> ScriptedTransport {
+        ScriptedTransport {
+            pull: Some(Box::new(|| {
+                Ok(crate::PullPage {
+                    has_more: true,
+                    ..Default::default()
+                })
+            })),
+            ..Default::default()
         }
     }
 
@@ -617,7 +590,7 @@ mod tests {
     fn an_empty_page_ends_the_pull_even_if_it_claims_there_is_more() {
         let dir = TempDir::new().unwrap();
         let app = open(&dir, "a.sqlite3");
-        let engine = SyncEngine::new(Arc::new(EndlessEmptyPages), unused_auth());
+        let engine = SyncEngine::new(Arc::new(endless_empty_pages()), unused_auth());
 
         assert_eq!(
             engine
