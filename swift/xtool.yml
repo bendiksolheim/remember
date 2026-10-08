@@ -1,5 +1,6 @@
 version: 1
+# Kept from the app's original name, "todo": changing it orphans existing data.
 bundleID: no.bendik.todo
-product: TodoApp
+product: RememberApp
 infoPath: ../apple/Info-iOS.plist
 iconPath: ../apple/AppIcon.png

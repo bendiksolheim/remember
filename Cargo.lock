@@ -2148,6 +2148,62 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "remember-cli"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "remember-core",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "remember-core"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "insta",
+ "loro",
+ "proptest",
+ "rusqlite",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
+name = "remember-ffi"
+version = "0.1.0"
+dependencies = [
+ "remember-core",
+ "remember-sync",
+ "thiserror 2.0.20",
+ "uniffi",
+]
+
+[[package]]
+name = "remember-sql-tests"
+version = "0.1.0"
+dependencies = [
+ "postgres",
+ "serde_json",
+]
+
+[[package]]
+name = "remember-sync"
+version = "0.1.0"
+dependencies = [
+ "remember-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2718,62 +2774,6 @@ name = "tinyvec"
 version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
-
-[[package]]
-name = "todo-cli"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "thiserror 2.0.20",
- "todo-core",
-]
-
-[[package]]
-name = "todo-core"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "insta",
- "loro",
- "proptest",
- "rusqlite",
- "serde",
- "tempfile",
- "thiserror 2.0.20",
- "uuid",
-]
-
-[[package]]
-name = "todo-ffi"
-version = "0.1.0"
-dependencies = [
- "thiserror 2.0.20",
- "todo-core",
- "todo-sync",
- "uniffi",
-]
-
-[[package]]
-name = "todo-sql-tests"
-version = "0.1.0"
-dependencies = [
- "postgres",
- "serde_json",
-]
-
-[[package]]
-name = "todo-sync"
-version = "0.1.0"
-dependencies = [
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "todo-core",
- "tokio",
- "wiremock",
-]
 
 [[package]]
 name = "tokio"

@@ -13,10 +13,10 @@ require macOS and will refuse to run here. You may not run `cargo xtask ci` eith
 
 ## Non-negotiables
 
-- `todo-core` stays at 100% line coverage. Tests ship with the code.
+- `remember-core` stays at 100% line coverage. Tests ship with the code.
 - No business logic in Swift. If a view needs to compute something, it
-  almost certainly belongs in `todo-core`. The only exception is if
+  almost certainly belongs in `remember-core`. The only exception is if
   something is only needed for one target (iOS or macOS).
 - No `.xcodeproj`. No `binaryTarget`. No XCFramework.
-- Never edit generated files: `swift/Sources/TodoKit/todo_ffi.swift`,
-  `swift/Sources/TodoFFI/*`.
+- Never edit generated files: `swift/Sources/RememberKit/remember_ffi.swift`,
+  `swift/Sources/RememberFFI/*`.

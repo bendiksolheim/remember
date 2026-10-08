@@ -88,12 +88,12 @@ fn dylib_extension() -> &'static str {
 fn bindings() -> Result<()> {
     let meta = cargo_metadata()?;
 
-    run_cmd(Command::new("cargo").args(["build", "-p", "todo-ffi", "--release"]))?;
+    run_cmd(Command::new("cargo").args(["build", "-p", "remember-ffi", "--release"]))?;
 
     let lib_path = meta
         .target_directory
         .join("release")
-        .join(format!("libtodo_ffi.{}", dylib_extension()));
+        .join(format!("libremember_ffi.{}", dylib_extension()));
 
     let out_dir = meta.target_directory.join("uniffi-bindgen-out");
     fs::create_dir_all(&out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
@@ -102,7 +102,7 @@ fn bindings() -> Result<()> {
         Command::new("cargo").args([
             "run",
             "-p",
-            "todo-ffi",
+            "remember-ffi",
             "--features",
             "cli",
             "--bin",
@@ -125,16 +125,16 @@ fn bindings() -> Result<()> {
 
     let swift_dir = meta.workspace_root.join("swift");
     place_generated_file(
-        &out_dir.join("todo_ffi.swift"),
-        &swift_dir.join("Sources/TodoKit/todo_ffi.swift"),
+        &out_dir.join("remember_ffi.swift"),
+        &swift_dir.join("Sources/RememberKit/remember_ffi.swift"),
     )?;
     place_generated_file(
-        &out_dir.join("todo_ffiFFI.h"),
-        &swift_dir.join("Sources/TodoFFI/todo_ffiFFI.h"),
+        &out_dir.join("remember_ffiFFI.h"),
+        &swift_dir.join("Sources/RememberFFI/remember_ffiFFI.h"),
     )?;
     place_generated_file(
-        &out_dir.join("todo_ffiFFI.modulemap"),
-        &swift_dir.join("Sources/TodoFFI/module.modulemap"),
+        &out_dir.join("remember_ffiFFI.modulemap"),
+        &swift_dir.join("Sources/RememberFFI/module.modulemap"),
     )?;
 
     Ok(())
@@ -149,7 +149,7 @@ fn place_generated_file(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Build the todo-ffi staticlib for one Apple target triple and copy it into
+/// Build the remember-ffi staticlib for one Apple target triple and copy it into
 /// the SwiftPM tree. There is exactly one staticlib path, overwritten with
 /// whichever target was built last — no XCFramework, no `lipo`.
 fn build(args: &[String]) -> Result<()> {
@@ -159,7 +159,7 @@ fn build(args: &[String]) -> Result<()> {
     run_cmd(Command::new("cargo").args([
         "build",
         "-p",
-        "todo-ffi",
+        "remember-ffi",
         "--release",
         "--target",
         &target,
@@ -169,10 +169,10 @@ fn build(args: &[String]) -> Result<()> {
         .target_directory
         .join(&target)
         .join("release")
-        .join("libtodo_ffi.a");
+        .join("libremember_ffi.a");
     let dest = meta
         .workspace_root
-        .join("swift/Sources/TodoFFI/lib/libtodo_ffi.a");
+        .join("swift/Sources/RememberFFI/lib/libremember_ffi.a");
     place_generated_file(&lib_path, &dest)?;
 
     Ok(())
@@ -194,7 +194,7 @@ fn parse_target_flag(args: &[String]) -> Result<String> {
     bail!("usage: cargo xtask build --target <triple>")
 }
 
-/// bindings + build + `swift build` + assemble `Todo.app` + ad-hoc sign.
+/// bindings + build + `swift build` + assemble `Remember.app` + ad-hoc sign.
 fn mac() -> Result<()> {
     mac_with_version(None)
 }
@@ -211,12 +211,12 @@ fn mac_with_version(version: Option<&str>) -> Result<()> {
     bindings()?;
     build(&["--target".to_string(), "aarch64-apple-darwin".to_string()])?;
 
-    // Scoped to the TodoMac product: `swift build` otherwise builds every
-    // target in the package, including TodoApp — the iOS entry point, whose
+    // Scoped to the RememberMac product: `swift build` otherwise builds every
+    // target in the package, including RememberApp — the iOS entry point, whose
     // source doesn't exist until Phase 3 — and fails on its empty target.
     run_cmd(
         Command::new("swift")
-            .args(["build", "-c", "release", "--product", "TodoMac"])
+            .args(["build", "-c", "release", "--product", "RememberMac"])
             .current_dir(meta.workspace_root.join("swift")),
     )?;
 
@@ -228,7 +228,7 @@ fn mac_with_version(version: Option<&str>) -> Result<()> {
             "--sign",
             "-",
             meta.workspace_root
-                .join("build/Todo.app")
+                .join("build/Remember.app")
                 .to_str()
                 .ok_or_else(|| anyhow!("non-utf8 workspace root"))?,
         ]),
@@ -238,7 +238,7 @@ fn mac_with_version(version: Option<&str>) -> Result<()> {
 }
 
 fn assemble_app(meta: &Metadata, version: Option<&str>) -> Result<()> {
-    let app = meta.workspace_root.join("build/Todo.app/Contents");
+    let app = meta.workspace_root.join("build/Remember.app/Contents");
     let macos_dir = app.join("MacOS");
     let resources_dir = app.join("Resources");
     fs::create_dir_all(&macos_dir).with_context(|| format!("creating {}", macos_dir.display()))?;
@@ -254,10 +254,10 @@ fn assemble_app(meta: &Metadata, version: Option<&str>) -> Result<()> {
     fs::write(app.join("Info.plist"), plist).context("writing Info.plist")?;
 
     fs::copy(
-        meta.workspace_root.join("swift/.build/release/TodoMac"),
-        macos_dir.join("Todo"),
+        meta.workspace_root.join("swift/.build/release/RememberMac"),
+        macos_dir.join("Remember"),
     )
-    .context("copying TodoMac executable")?;
+    .context("copying RememberMac executable")?;
 
     Ok(())
 }
@@ -267,7 +267,7 @@ fn run() -> Result<()> {
     require_macos("run")?;
     let meta = cargo_metadata()?;
     mac()?;
-    run_cmd(Command::new("open").arg(meta.workspace_root.join("build/Todo.app")))?;
+    run_cmd(Command::new("open").arg(meta.workspace_root.join("build/Remember.app")))?;
     Ok(())
 }
 
@@ -311,11 +311,11 @@ fn package(args: &[String]) -> Result<()> {
 
     mac_with_version(Some(&version))?;
 
-    let app_path = meta.workspace_root.join("build/Todo.app");
+    let app_path = meta.workspace_root.join("build/Remember.app");
     let zip_path = meta
         .workspace_root
         .join("build")
-        .join(format!("Todo-{version}-macos-arm64.zip"));
+        .join(format!("Remember-{version}-macos-arm64.zip"));
 
     // `ditto`, not `zip`/`tar` — it's the Apple-blessed way to archive a
     // signed `.app` without corrupting the code signature or resource forks.
@@ -408,7 +408,7 @@ fn test() -> Result<()> {
         "run",
         "--workspace",
         "--features",
-        "todo-core/testing",
+        "remember-core/testing",
     ]))
 }
 
@@ -417,15 +417,15 @@ fn cov() -> Result<()> {
         "llvm-cov",
         "nextest",
         "--package",
-        "todo-core",
+        "remember-core",
         "--package",
-        "todo-sync",
+        "remember-sync",
         "--package",
-        "todo-ffi",
+        "remember-ffi",
         "--package",
-        "todo-cli",
+        "remember-cli",
         "--features",
-        "todo-core/testing",
+        "remember-core/testing",
         "--ignore-filename-regex",
         r"(crates/ffi/src/lib\.rs|crates/cli/src/main\.rs)",
         "--fail-under-lines",
@@ -442,7 +442,7 @@ fn ci() -> Result<()> {
         "--workspace",
         "--all-targets",
         "--features",
-        "todo-core/testing",
+        "remember-core/testing",
         "--",
         "-D",
         "warnings",
@@ -452,7 +452,7 @@ fn ci() -> Result<()> {
     Ok(())
 }
 
-const PG_CONTAINER: &str = "todo-pgtest";
+const PG_CONTAINER: &str = "remember-pgtest";
 const PG_IMAGE: &str = "docker.io/library/postgres:17";
 const PG_PORT: u16 = 54329;
 
@@ -512,12 +512,12 @@ fn pgtest_in_container(supabase: &Path) -> Result<()> {
                 "nextest",
                 "run",
                 "--package",
-                "todo-sql-tests",
+                "remember-sql-tests",
                 "--run-ignored",
                 "only",
             ])
             .env(
-                "TODO_SYNC_PG_URL",
+                "REMEMBER_SYNC_PG_URL",
                 format!("postgres://postgres:pgtest@127.0.0.1:{PG_PORT}/postgres"),
             ),
     )
@@ -564,7 +564,7 @@ mod tests {
   <key>CFBundleVersion</key>           <string>0</string>
   <key>CFBundleShortVersionString</key><string>dev</string>
   <key>LSUIElement</key>               <true/>
-  <key>CFBundleName</key>              <string>Todo</string>
+  <key>CFBundleName</key>              <string>Remember</string>
 </dict>";
 
     #[test]

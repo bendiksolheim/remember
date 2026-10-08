@@ -3,7 +3,7 @@
 //! test-only stand-in that follows the same rules as the server's
 //! `sync_*` functions (`supabase/schema.sql`), so multi-device convergence
 //! and compaction can be tested without any network at all — same "inject a
-//! trait for testability" shape as `todo-core`'s `Clock`/`IdSource`
+//! trait for testability" shape as `remember-core`'s `Clock`/`IdSource`
 //! (`crates/core/src/clock.rs`).
 
 use serde::Deserialize;

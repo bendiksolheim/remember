@@ -1,4 +1,4 @@
-//! Device sync over an opaque byte transport. `todo-core`'s Loro document
+//! Device sync over an opaque byte transport. `remember-core`'s Loro document
 //! already merges commutatively and idempotently (see its property tests) —
 //! this crate's only job is getting bytes to and from a server and knowing
 //! when to call `App`'s sync primitives, not any merge logic of its own.
@@ -41,5 +41,5 @@ pub enum SyncError {
     #[error("auth error: {0}")]
     Auth(String),
     #[error("core error: {0}")]
-    Core(#[from] todo_core::CoreError),
+    Core(#[from] remember_core::CoreError),
 }

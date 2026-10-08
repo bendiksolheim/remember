@@ -2,10 +2,10 @@
 /build
 /swift/.build
 /swift/xtool/
-/swift/Sources/TodoFFI/lib/
-/swift/Sources/TodoFFI/*.h
-/swift/Sources/TodoFFI/module.modulemap
-/swift/Sources/TodoKit/todo_ffi.swift
+/swift/Sources/RememberFFI/lib/
+/swift/Sources/RememberFFI/*.h
+/swift/Sources/RememberFFI/module.modulemap
+/swift/Sources/RememberKit/remember_ffi.swift
 /lcov.info
 /mutants.out/
 /mutants.out.old/

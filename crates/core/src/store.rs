@@ -1,7 +1,7 @@
 //! SQLite persistence. The Loro document is the source of truth; SQLite only
 //! provides crash-safe storage for its exported snapshot bytes, plus a
 //! per-install peer id. No normalized task tables — the whole document fits
-//! in memory for any realistic personal todo list.
+//! in memory for any realistic personal task list.
 
 use std::sync::Mutex;
 

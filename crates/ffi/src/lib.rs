@@ -1,11 +1,11 @@
-//! UniFFI wrappers. Anything resembling a decision belongs in `todo-core`;
+//! UniFFI wrappers. Anything resembling a decision belongs in `remember-core`;
 //! each method body here is a one-liner delegating to it via `convert.rs`.
 
 mod convert;
 
 use std::sync::{Arc, Mutex};
 
-use todo_core::App as CoreApp;
+use remember_core::App as CoreApp;
 
 uniffi::setup_scaffolding!();
 
@@ -14,7 +14,7 @@ uniffi::setup_scaffolding!();
 #[uniffi::export]
 pub fn build_info() -> String {
     format!(
-        "todo {} / {} / {}",
+        "remember {} / {} / {}",
         env!("CARGO_PKG_VERSION"),
         std::env::consts::ARCH,
         std::env::consts::OS
@@ -24,7 +24,7 @@ pub fn build_info() -> String {
 #[derive(uniffi::Enum)]
 pub enum Command {
     /// `list_id: None` means "whichever list is currently active" — see
-    /// `todo_core::Command::Add`'s own doc comment.
+    /// `remember_core::Command::Add`'s own doc comment.
     Add {
         title: String,
         after: Option<String>,
@@ -84,7 +84,7 @@ pub enum View {
     Completed,
 }
 
-/// A task's urgency relative to "today". Mirrors `todo_core::DueState`.
+/// A task's urgency relative to "today". Mirrors `remember_core::DueState`.
 #[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DueState {
     #[default]
@@ -94,7 +94,7 @@ pub enum DueState {
     Overdue,
 }
 
-/// One entry in the `lists` roster — see `todo_core::ListRow`.
+/// One entry in the `lists` roster — see `remember_core::ListRow`.
 #[derive(uniffi::Record, Clone)]
 pub struct ListRow {
     pub id: String,
@@ -106,7 +106,7 @@ pub struct ListRow {
 }
 
 /// A list's identity color — an opaque palette slot, not a hex value.
-/// Mirrors `todo_core::ListColor`.
+/// Mirrors `remember_core::ListColor`.
 #[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ListColor {
     #[default]
@@ -210,7 +210,7 @@ impl App {
     }
 
     /// Switches which list `current()` reads and new captures land in. See
-    /// `todo_core::App::set_current_list`'s own doc comment.
+    /// `remember_core::App::set_current_list`'s own doc comment.
     pub fn set_current_list(&self, list_id: String) -> Result<(), AppError> {
         self.inner
             .set_current_list(list_id)
@@ -261,7 +261,7 @@ impl App {
 /// the caller's job, per the working agreement's Keychain exception.
 /// Refreshing it, unlike storing it, happens on the Rust side (see
 /// `SyncStatusListener::on_session_refreshed`) -- `expires_at` (Unix
-/// seconds) is what lets `todo-sync` decide when that's due.
+/// seconds) is what lets `remember-sync` decide when that's due.
 #[derive(uniffi::Record)]
 pub struct Session {
     pub access_token: String,
@@ -308,27 +308,26 @@ pub trait SyncStatusListener: Send + Sync {
 
 #[derive(uniffi::Object)]
 pub struct SyncClient {
-    auth: todo_sync::AuthClient,
-    engine: todo_sync::SyncEngine,
+    auth: remember_sync::AuthClient,
+    engine: remember_sync::SyncEngine,
     // Created lazily by `start_auto_sync` (needs an `App` to subscribe to,
     // which isn't available yet at construction) and shared by every
     // subsequent call — `set_sync_token`/`sync_soon` are no-ops before it
     // exists, matching "sync is opt-in, nothing runs until asked."
-    auto_sync: Mutex<Option<Arc<todo_sync::AutoSyncCoordinator>>>,
+    auto_sync: Mutex<Option<Arc<remember_sync::AutoSyncCoordinator>>>,
 }
 
 #[uniffi::export]
 impl SyncClient {
     #[uniffi::constructor]
     pub fn new(supabase_url: String, anon_key: String) -> Arc<Self> {
-        let transport: Arc<dyn todo_sync::SyncTransport> = Arc::new(todo_sync::HttpTransport::new(
-            supabase_url.clone(),
-            anon_key.clone(),
-        ));
-        let auth = todo_sync::AuthClient::new(supabase_url, anon_key);
+        let transport: Arc<dyn remember_sync::SyncTransport> = Arc::new(
+            remember_sync::HttpTransport::new(supabase_url.clone(), anon_key.clone()),
+        );
+        let auth = remember_sync::AuthClient::new(supabase_url, anon_key);
         Arc::new(Self {
             auth: auth.clone(),
-            engine: todo_sync::SyncEngine::new(transport, auth),
+            engine: remember_sync::SyncEngine::new(transport, auth),
             auto_sync: Mutex::new(None),
         })
     }
@@ -359,7 +358,7 @@ impl SyncClient {
             return;
         }
         let coordinator =
-            todo_sync::AutoSyncCoordinator::new(Arc::clone(&app.inner), self.engine.clone());
+            remember_sync::AutoSyncCoordinator::new(Arc::clone(&app.inner), self.engine.clone());
         let result_listener = Arc::clone(&listener);
         coordinator.set_listener(move |result| match result {
             Ok(outcome) => {
@@ -387,10 +386,10 @@ impl SyncClient {
     /// Supabase in the background — this device's only, so the user's
     /// other devices stay signed in. `session` is the caller's persisted
     /// copy, used if auto-sync has none. Best effort and never blocks:
-    /// offline, the revocation is simply skipped. See `todo_sync::sign_out`.
+    /// offline, the revocation is simply skipped. See `remember_sync::sign_out`.
     pub fn sign_out(&self, session: Option<Session>) {
         let guard = self.auto_sync.lock().unwrap_or_else(|p| p.into_inner());
-        todo_sync::sign_out(
+        remember_sync::sign_out(
             &self.auth,
             guard.as_deref(),
             session.map(convert::session_to_sync),

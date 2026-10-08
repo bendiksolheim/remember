@@ -1,10 +1,10 @@
 [package]
-name = "todo-ffi"
+name = "remember-ffi"
 version.workspace = true
 edition.workspace = true
 
 [lib]
-name = "todo_ffi"
+name = "remember_ffi"
 crate-type = ["lib", "staticlib", "cdylib"]
 
 [[bin]]
@@ -14,8 +14,8 @@ required-features = ["cli"]
 
 [dependencies]
 thiserror = "2.0.20"
-todo-core = { version = "0.1.0", path = "../core" }
-todo-sync = { version = "0.1.0", path = "../sync" }
+remember-core = { version = "0.1.0", path = "../core" }
+remember-sync = { version = "0.1.0", path = "../sync" }
 uniffi = { version = "0.32.0" }
 
 [features]

@@ -1,12 +1,12 @@
 //! Orchestration: a session refresh, and the pull-then-merge-then-push
 //! round. This is the one place that decides in what order to call `App`'s
 //! sync primitives; deciding *when* to run a round, and owning the session,
-//! is `AutoSyncCoordinator`'s job. `todo-ffi` must only delegate here, per
+//! is `AutoSyncCoordinator`'s job. `remember-ffi` must only delegate here, per
 //! the FFI crate's own convention that decisions belong below it.
 
 use std::sync::Arc;
 
-use todo_core::App;
+use remember_core::App;
 
 use crate::auth::{AuthClient, Session};
 use crate::transport::SyncTransport;
@@ -140,8 +140,8 @@ impl SyncEngine {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use remember_core::Command;
     use tempfile::TempDir;
-    use todo_core::Command;
 
     use super::*;
     use crate::transport::InMemoryTransport;
@@ -187,7 +187,7 @@ mod tests {
         let engine = SyncEngine::new(transport, unused_auth());
 
         // Even with no user edits yet, `App::open` already bootstrapped the
-        // default list — see `todo_core::doc`'s module doc comment — so the
+        // default list — see `remember_core::doc`'s module doc comment — so the
         // very first sync round pushes that, not nothing.
         let result = engine.sync_once(&app, &fresh_session("tok"));
         let outcome = result.unwrap();
@@ -323,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn switching_accounts_never_carries_one_accounts_todos_into_the_other() {
+    fn switching_accounts_never_carries_one_accounts_tasks_into_the_other() {
         let dir = TempDir::new().unwrap();
         let a_server = Arc::new(InMemoryTransport::new());
         let b_server = Arc::new(InMemoryTransport::new());

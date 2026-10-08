@@ -8,8 +8,8 @@
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
+use remember_core::Clock;
 use serde::Deserialize;
-use todo_core::Clock;
 
 use crate::SyncError;
 
@@ -76,7 +76,7 @@ struct RawUser {
 
 impl AuthClient {
     pub fn new(base_url: impl Into<String>, anon_key: impl Into<String>) -> Self {
-        Self::with_clock(base_url, anon_key, Arc::new(todo_core::SystemClock))
+        Self::with_clock(base_url, anon_key, Arc::new(remember_core::SystemClock))
     }
 
     /// Same as [`Self::new`], but with the clock injected — the only way
@@ -222,7 +222,7 @@ impl AuthClient {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use todo_core::FixedClock;
+    use remember_core::FixedClock;
     use wiremock::matchers::{body_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

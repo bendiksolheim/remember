@@ -1,4 +1,4 @@
-use todo_core::{Command, CoreError, Doc, DueState, FixedClock, SeqIdSource, ViewFilter};
+use remember_core::{Command, CoreError, Doc, DueState, FixedClock, SeqIdSource, ViewFilter};
 
 fn add(doc: &mut Doc, clock: &FixedClock, ids: &SeqIdSource, title: &str) -> String {
     doc.apply(
@@ -17,11 +17,11 @@ fn add(doc: &mut Doc, clock: &FixedClock, ids: &SeqIdSource, title: &str) -> Str
         .clone()
 }
 
-fn titles(snap: &todo_core::Snapshot) -> Vec<String> {
+fn titles(snap: &remember_core::Snapshot) -> Vec<String> {
     snap.rows.iter().map(|r| r.title.clone()).collect()
 }
 
-fn ids_of(snap: &todo_core::Snapshot) -> Vec<String> {
+fn ids_of(snap: &remember_core::Snapshot) -> Vec<String> {
     snap.rows.iter().map(|r| r.id.clone()).collect()
 }
 

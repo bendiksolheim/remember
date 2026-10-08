@@ -1,12 +1,12 @@
 import SwiftUI
-import TodoKit
+import RememberKit
 
-/// Signing in, so todos sync between devices. Called "Account", not "Sync":
+/// Signing in, so tasks sync between devices. Called "Account", not "Sync":
 /// the user signs in to an account, and syncing is just what it gets them.
 /// Syncing itself runs on its own in the background, so there is nothing
 /// to start by hand here, only status.
 struct AccountSettingsView: SwiftUI.View {
-    @Environment(TodoModel.self) private var model
+    @Environment(RememberModel.self) private var model
 
     var body: some SwiftUI.View {
         Form {
@@ -28,7 +28,7 @@ struct AccountSettingsView: SwiftUI.View {
 }
 
 private struct SignedInSection: SwiftUI.View {
-    @Environment(TodoModel.self) private var model
+    @Environment(RememberModel.self) private var model
     @State private var isConfirmingSignOut = false
 
     var body: some SwiftUI.View {
@@ -59,7 +59,7 @@ private struct SignedInSection: SwiftUI.View {
         } header: {
             Text("Account")
         } footer: {
-            Text("Your todos sync in the background while Todo is running.")
+            Text("Your tasks sync in the background while Remember is running.")
                 .foregroundStyle(.secondary)
         }
 
@@ -72,7 +72,7 @@ private struct SignedInSection: SwiftUI.View {
         } message: {
             // Signing in to another account later resets local data (see
             // `App::bind_sync_account`); this is the moment that's set up.
-            Text("Your todos stay on this Mac but stop syncing. If you later sign in to a different account, the todos on this Mac are replaced by that account's, and changes that haven't synced yet are lost.")
+            Text("Your tasks stay on this Mac but stop syncing. If you later sign in to a different account, the tasks on this Mac are replaced by that account's, and changes that haven't synced yet are lost.")
         }
     }
 }
@@ -80,7 +80,7 @@ private struct SignedInSection: SwiftUI.View {
 /// One form with two modes. Signing in is the common case, so it's the
 /// default; creating an account is one click away.
 private struct SignInSection: SwiftUI.View {
-    @Environment(TodoModel.self) private var model
+    @Environment(RememberModel.self) private var model
 
     @State private var isCreatingAccount = false
     @State private var email = ""
@@ -131,9 +131,9 @@ private struct SignInSection: SwiftUI.View {
             }
         } header: {
             VStack(alignment: .leading, spacing: 6) {
-                Text(isCreatingAccount ? "Create an Account" : "Use Todo on All Your Devices")
+                Text(isCreatingAccount ? "Create an Account" : "Use Remember on All Your Devices")
                     .font(.headline)
-                Text("Your todos are stored on this Mac. Sign in to get them on your other devices too. An account is optional: everything works without one.")
+                Text("Your tasks are stored on this Mac. Sign in to get them on your other devices too. An account is optional: everything works without one.")
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

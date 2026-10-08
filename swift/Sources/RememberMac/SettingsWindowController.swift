@@ -1,6 +1,6 @@
 import AppKit
 import SwiftUI
-import TodoKit
+import RememberKit
 
 /// The Settings window's tabs, in toolbar order. `rawValue` is the tab's
 /// index in `SettingsWindowController`'s `NSTabViewController`.
@@ -47,7 +47,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let navigation: SettingsNavigation
     private let onClose: () -> Void
 
-    init(model: TodoModel, hotKey: HotKeyStatus, onClose: @escaping () -> Void) {
+    init(model: RememberModel, hotKey: HotKeyStatus, onClose: @escaping () -> Void) {
         self.onClose = onClose
         let navigation = SettingsNavigation()
         self.navigation = navigation
@@ -58,7 +58,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         // is the selected tab's view controller's title, and the hosting
         // controllers have none, so the window said "Untitled".
         tabs.canPropagateSelectedChildViewControllerTitle = false
-        let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Todo"
+        let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Remember"
         tabs.title = "\(appName) Settings"
         tabs.addTabViewItem(SettingsWindowController.tab(
             GeneralSettingsView(hotKey: hotKey),
@@ -92,7 +92,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         _ view: some SwiftUI.View,
         label: String,
         symbol: String,
-        model: TodoModel,
+        model: RememberModel,
         navigation: SettingsNavigation
     ) -> NSTabViewItem {
         let hosting = NSHostingController(rootView: view

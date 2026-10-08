@@ -2,7 +2,7 @@ mod parse;
 
 use std::io::{self, BufRead, Write};
 
-use todo_core::{App, Command, Snapshot};
+use remember_core::{App, Command, Snapshot};
 
 use parse::parse;
 
@@ -37,6 +37,9 @@ fn enrich_add(app: &App, command: Command) -> Command {
     }
 }
 
+/// Folder and file still carry the app's original name, "todo": renaming
+/// them would orphan existing data. Same names as the Swift side's
+/// `defaultDatabasePath`.
 fn default_db_path() -> String {
     let dir = dirs::data_dir()
         .unwrap_or_else(std::env::temp_dir)
@@ -63,7 +66,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    println!("todo-cli — database at {db_path}");
+    println!("remember-cli — database at {db_path}");
     render(&app.current());
 
     let stdin = io::stdin();

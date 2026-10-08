@@ -1,10 +1,10 @@
 import SwiftUI
-import TodoKit
+import RememberKit
 
 public struct TaskListView: SwiftUI.View {
-    @Environment(TodoModel.self) private var model
+    @Environment(RememberModel.self) private var model
     @State private var newTitle = ""
-    /// Live result of `TodoModel.detectDue` for `newTitle`, re-checked on
+    /// Live result of `RememberModel.detectDue` for `newTitle`, re-checked on
     /// every keystroke. `nil` means no recognized trailing phrase.
     @State private var dueDetection: DueDetection?
     /// Set when the user taps the badge to reject a detection for this
@@ -46,7 +46,7 @@ public struct TaskListView: SwiftUI.View {
                 TaskDetailView(row: row)
             }
         }
-        .navigationTitle("Todo")
+        .navigationTitle("Remember")
         .toolbar {
             ToolbarItem {
                 Menu {
@@ -59,9 +59,9 @@ public struct TaskListView: SwiftUI.View {
             }
             ToolbarItem {
                 Picker("Filter", selection: viewBinding) {
-                    Text("All").tag(TodoKit.View.all)
-                    Text("Active").tag(TodoKit.View.active)
-                    Text("Completed").tag(TodoKit.View.completed)
+                    Text("All").tag(RememberKit.View.all)
+                    Text("Active").tag(RememberKit.View.active)
+                    Text("Completed").tag(RememberKit.View.completed)
                 }
                 .pickerStyle(.segmented)
             }
@@ -80,7 +80,7 @@ public struct TaskListView: SwiftUI.View {
         }
     }
 
-    private var viewBinding: Binding<TodoKit.View> {
+    private var viewBinding: Binding<RememberKit.View> {
         Binding(
             get: { model.snapshot?.view ?? .all },
             set: { model.setView($0) }

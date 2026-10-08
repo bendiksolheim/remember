@@ -1,14 +1,14 @@
 //! Integration tests for the sync-facing primitives on `App`
 //! (`export_for_push`/`mark_pushed`/`import_from_pull`/`last_pulled_seq`/
 //! `mark_pulled`). These don't touch any network transport — that lives in
-//! `todo-sync` — they only prove the App-level contract those primitives
+//! `remember-sync` — they only prove the App-level contract those primitives
 //! promise: incremental exports, safe retry-ability, and pulled changes
 //! behaving like local edits.
 
 use std::sync::{Arc, Mutex};
 
+use remember_core::{App, Command, CoreError, Store};
 use tempfile::TempDir;
-use todo_core::{App, Command, CoreError, Store};
 
 fn db_path(dir: &TempDir, name: &str) -> String {
     dir.path().join(name).to_str().unwrap().to_string()
@@ -165,7 +165,7 @@ fn import_from_pull_updates_current_snapshot_and_notifies_subscribers() {
 
 #[test]
 fn two_devices_converge_via_manual_push_pull_cycle() {
-    // Simulates what `todo-sync`'s SyncEngine will automate: each device
+    // Simulates what `remember-sync`'s SyncEngine will automate: each device
     // exports what's new since its own last push, "the server" is just the
     // concatenation of both, each device imports what it doesn't have yet.
     let dir = TempDir::new().unwrap();

@@ -1,5 +1,5 @@
 [package]
-name = "todo-sql-tests"
+name = "remember-sql-tests"
 version.workspace = true
 edition.workspace = true
 publish = false

@@ -29,7 +29,7 @@ final class GlobalHotKey {
         GlobalHotKey.nextID += 1
 
         var ref: EventHotKeyRef?
-        let hotKeyIDStruct = EventHotKeyID(signature: OSType(bitPattern: 0x546F_646F /* 'Todo' */), id: id)
+        let hotKeyIDStruct = EventHotKeyID(signature: OSType(bitPattern: 0x526D_6272 /* 'Rmbr' */), id: id)
         let status = RegisterEventHotKey(
             keyCode,
             modifiers,

@@ -294,11 +294,11 @@ impl App {
     /// about to sync as:
     ///
     /// - No account bound yet (first sign-in): binds `user_id` and keeps
-    ///   everything, so todos made before ever signing in get uploaded.
+    ///   everything, so tasks made before ever signing in get uploaded.
     /// - Same account: a no-op.
     /// - A different account: resets local state — empty document, both
     ///   sync cursors, the last sync time and the current list forgotten — so one account's
-    ///   todos never leak into, or get uploaded to, another's. The previous
+    ///   tasks never leak into, or get uploaded to, another's. The previous
     ///   account's synced data stays on the server; its unpushed edits on
     ///   this device are lost. Also picks a fresh peer id: the new account
     ///   may already hold ops this device made under its old peer id (it

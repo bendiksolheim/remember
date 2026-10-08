@@ -1,10 +1,10 @@
 import Cocoa
 import SwiftUI
-import TodoKit
+import RememberKit
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate {
-    private var model: TodoModel!
+    private var model: RememberModel!
     private var panel: SpotlightPanel!
     private var hotKey: GlobalHotKey?
     private var statusItem: NSStatusItem?
@@ -21,9 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
 
         NSApp.setActivationPolicy(.accessory)
 
-        // Bare project URL, no path — `todo-sync`'s `HttpTransport`/`AuthClient`
+        // Bare project URL, no path — `remember-sync`'s `HttpTransport`/`AuthClient`
         // append `/rest/v1/...` and `/auth/v1/...` themselves.
-        model = try! TodoModel(
+        model = try! RememberModel(
             supabaseURL: "https://xzmbkeeaycyaluadzxhe.supabase.co",
             supabaseAnonKey: "sb_publishable_xRie_YdgGu7lS0ozQzYeUg_Ww0Ek7mE"
         )
@@ -55,7 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
             }
         )
         if hotKey == nil {
-            NSLog("Todo: failed to register the global hotkey (⌥⌘Space may already be claimed by another app).")
+            NSLog("Remember: failed to register the global hotkey (⌥⌘Space may already be claimed by another app).")
         }
 
         setUpStatusItem()
@@ -108,7 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
 
     private func setUpStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = NSImage(systemSymbolName: "checklist", accessibilityDescription: "Todo")
+        item.button?.image = NSImage(systemSymbolName: "checklist", accessibilityDescription: "Remember")
 
         let menu = NSMenu()
         let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
@@ -125,7 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
         showSettings()
     }
 
-    /// Also the app menu's "Settings…" (see `TodoMacApp`). `tab` nil opens
+    /// Also the app menu's "Settings…" (see `RememberMacApp`). `tab` nil opens
     /// whichever tab the window last showed.
     func showSettings(tab: SettingsTab? = nil, focusNewList: Bool = false) {
         if settingsWindowController == nil {

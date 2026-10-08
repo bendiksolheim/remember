@@ -92,12 +92,12 @@ jobs:
           sed -i \
             -e "s/^  version \".*\"/  version \"$VERSION\"/" \
             -e "s/^  sha256 \".*\"/  sha256 \"$SHA256\"/" \
-            Casks/todo.rb
+            Casks/remember.rb
 
       - name: Commit updated Cask
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Casks/todo.rb
-          git diff --cached --quiet || git commit -m "Casks/todo.rb: bump to $TAG"
+          git add Casks/remember.rb
+          git diff --cached --quiet || git commit -m "Casks/remember.rb: bump to $TAG"
           git push origin HEAD:main

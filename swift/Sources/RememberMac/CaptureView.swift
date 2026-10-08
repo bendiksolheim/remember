@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
-import TodoKit
+import RememberKit
 
-// Same qualification convention as TodoUI (see TaskRowView.swift): TodoKit's
+// Same qualification convention as RememberUI (see TaskRowView.swift): RememberKit's
 // generated `App`/`View` collide by name with `SwiftUI.App`/`SwiftUI.View`
 // once both modules are imported, so conformances/opaque returns are
 // qualified explicitly rather than trusting contextual resolution --
@@ -14,10 +14,10 @@ import TodoKit
 /// (`ListPillRow`), and moving the focused row to a different list
 /// (⌘⌥1–⌘⌥9, mirroring the plain ⌘1–⌘9 switch shortcuts -- see
 /// `moveFocusedRow`). Deleting is still out of scope here -- that remains
-/// reachable only via `TodoUI`'s `TaskListView`, which iOS still uses but
+/// reachable only via `RememberUI`'s `TaskListView`, which iOS still uses but
 /// this target no longer wires up.
 struct CaptureView: SwiftUI.View {
-    @Environment(TodoModel.self) private var model
+    @Environment(RememberModel.self) private var model
     var onDismiss: () -> Void
     /// Opens the Settings window on its Lists tab — wired to the pill row's
     /// trailing "+" pill. `CaptureView` has no window of its own to show
@@ -32,7 +32,7 @@ struct CaptureView: SwiftUI.View {
     var onContentHeightChange: (CGFloat) -> Void
 
     @State private var input = ""
-    /// Live result of `TodoModel.detectDue` for `input`, re-checked on every
+    /// Live result of `RememberModel.detectDue` for `input`, re-checked on every
     /// keystroke. `nil` means no recognized trailing phrase.
     @State private var dueDetection: DueDetection?
     /// Set when the user clicks the badge to reject a detection for this
@@ -75,7 +75,7 @@ struct CaptureView: SwiftUI.View {
     @State private var ghostAnchors: [String: String] = [:]
     /// Ghost ids that have been un-completed but are kept in `ghosts` until
     /// `model.snapshot` actually confirms the row is active again --
-    /// `TodoModel`'s snapshot updates hop through a `Task { @MainActor in
+    /// `RememberModel`'s snapshot updates hop through a `Task { @MainActor in
     /// ... } ` (Model.swift), landing a run-loop turn after `dispatch`
     /// returns, so dropping a ghost the instant we dispatch would make the
     /// row vanish from `displayRows` for a frame (neither still a ghost nor
@@ -376,7 +376,7 @@ struct CaptureView: SwiftUI.View {
     /// opposite end of the list on an edge press would be a much bigger,
     /// easier-to-regret jump than just moving focus there.
     ///
-    /// `Move`'s `after` is relational (todo-core resolves it directly
+    /// `Move`'s `after` is relational (remember-core resolves it directly
     /// against its own order, same as the CLI's `mv` does against a
     /// snapshot) -- here that means "the id `rows` already puts right where
     /// the focused row should land": moving down lands right after the
@@ -514,7 +514,7 @@ struct CaptureView: SwiftUI.View {
     }
 
     /// Enter finalizes: dispatches the draft unconditionally. `SetTitle`
-    /// trims and no-ops on an empty result itself (see todo-core), so an
+    /// trims and no-ops on an empty result itself (see remember-core), so an
     /// emptied title just silently reverts -- no client-side empty check
     /// needed here.
     private func commitEdit() {
@@ -690,7 +690,7 @@ struct CaptureView: SwiftUI.View {
 /// task moved into it by ⌘⌥1–⌘⌥9 -- secondary feedback alongside the moved
 /// row's own fade-out.
 private struct ListPillRow: SwiftUI.View {
-    @Environment(TodoModel.self) private var model
+    @Environment(RememberModel.self) private var model
     var onOpenListsSettings: () -> Void
     var blinkingListID: String?
     var onSelectList: (String) -> Void

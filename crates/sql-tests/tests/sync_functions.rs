@@ -7,7 +7,7 @@
 //! parallel.
 //!
 //! Run with `cargo xtask pgtest`, which starts the database and points
-//! `TODO_SYNC_PG_URL` at it.
+//! `REMEMBER_SYNC_PG_URL` at it.
 
 use std::sync::mpsc;
 use std::thread;
@@ -20,8 +20,8 @@ use serde_json::{json, Value};
 const NEEDS_POSTGRES: &str = "needs Postgres: run with `cargo xtask pgtest`";
 
 fn connect() -> Client {
-    let url = std::env::var("TODO_SYNC_PG_URL")
-        .unwrap_or_else(|_| panic!("TODO_SYNC_PG_URL is not set; {NEEDS_POSTGRES}"));
+    let url = std::env::var("REMEMBER_SYNC_PG_URL")
+        .unwrap_or_else(|_| panic!("REMEMBER_SYNC_PG_URL is not set; {NEEDS_POSTGRES}"));
     Client::connect(&url, NoTls).unwrap()
 }
 

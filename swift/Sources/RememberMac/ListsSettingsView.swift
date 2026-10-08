@@ -1,12 +1,12 @@
 import SwiftUI
-import TodoKit
+import RememberKit
 
 /// List management: create, rename, delete, and reorder lists. Kept in
 /// Settings rather than the capture panel's `ListPillRow` -- that control
 /// stays fast and minimal (switch only); this is the deliberate,
 /// separate-visit surface for the less-frequent management actions.
 struct ListsSettingsView: SwiftUI.View {
-    @Environment(TodoModel.self) private var model
+    @Environment(RememberModel.self) private var model
     @Environment(SettingsNavigation.self) private var navigation
     @State private var newListName = ""
     @FocusState private var isNewListFocused: Bool
@@ -15,7 +15,7 @@ struct ListsSettingsView: SwiftUI.View {
 
     var body: some SwiftUI.View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Your lists appear as buttons under the text field when you open Todo. The first nine can be picked with ⌘1–⌘9, in the order shown here. Drag a list to move it, and click a name to rename it.")
+            Text("Your lists appear as buttons under the text field when you open Remember. The first nine can be picked with ⌘1–⌘9, in the order shown here. Drag a list to move it, and click a name to rename it.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -75,7 +75,7 @@ struct ListsSettingsView: SwiftUI.View {
 /// undo step and sync op, so per-keystroke dispatch made ⌘Z undo a rename
 /// one letter at a time.
 private struct ListSettingsRow: SwiftUI.View {
-    @Environment(TodoModel.self) private var model
+    @Environment(RememberModel.self) private var model
     let list: ListRow
     let shortcutDigit: Int?
     let canDelete: Bool
@@ -139,13 +139,13 @@ private struct ListSettingsRow: SwiftUI.View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This deletes the list and every todo in it, including completed ones.")
+            Text("This deletes the list and every task in it, including completed ones.")
         }
     }
 
     private var deleteTitle: String {
-        let todos = list.taskCount == 1 ? "1 todo" : "\(list.taskCount) todos"
-        return "Delete “\(list.name)” and its \(todos)?"
+        let tasks = list.taskCount == 1 ? "1 task" : "\(list.taskCount) tasks"
+        return "Delete “\(list.name)” and its \(tasks)?"
     }
 
     /// An empty name goes back to the current one instead of being sent

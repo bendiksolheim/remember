@@ -1,8 +1,8 @@
 import SwiftUI
-import TodoKit
+import RememberKit
 
-// `SwiftUI.View`/`SwiftUI.App` are qualified explicitly throughout TodoUI:
-// TodoKit's generated `App` and `View` types (mirroring PLAN.md's FFI
+// `SwiftUI.View`/`SwiftUI.App` are qualified explicitly throughout RememberUI:
+// RememberKit's generated `App` and `View` types (mirroring PLAN.md's FFI
 // surface) collide by name with those two SwiftUI protocols the moment both
 // modules are imported in the same file. There's no Swift toolchain in this
 // container to compile-check whether Swift's contextual resolution would
@@ -12,7 +12,7 @@ import TodoKit
 public struct TaskRowView: SwiftUI.View {
     let row: TaskRow
 
-    @Environment(TodoModel.self) private var model
+    @Environment(RememberModel.self) private var model
 
     public init(row: TaskRow) {
         self.row = row

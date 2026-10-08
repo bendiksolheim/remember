@@ -5,7 +5,7 @@
 // required case (wrong arity, non-numeric/out-of-range index, unknown
 // command) with less translation than mapping clap's `ErrorKind` variants
 // back into ours would take.
-use todo_core::{Command, Snapshot};
+use remember_core::{Command, Snapshot};
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ParseError {
@@ -116,7 +116,7 @@ pub fn parse(line: &str, snapshot: &Snapshot) -> Result<Option<Command>, ParseEr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use todo_core::{Doc, FixedClock, SeqIdSource, ViewFilter};
+    use remember_core::{Doc, FixedClock, SeqIdSource, ViewFilter};
 
     fn snapshot_with_tasks(titles: &[&str]) -> Snapshot {
         let mut doc = Doc::new(1).unwrap();

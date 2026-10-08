@@ -1,6 +1,8 @@
 import Foundation
 import Observation
 
+// Folder and file still carry the app's original name, "todo": renaming them
+// would orphan existing data. Same names as the CLI's `default_db_path`.
 public func defaultDatabasePath() -> String {
     let dir = FileManager.default
         .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -11,7 +13,7 @@ public func defaultDatabasePath() -> String {
 
 @MainActor
 @Observable
-public final class TodoModel {
+public final class RememberModel {
     public private(set) var snapshot: Snapshot?
     public private(set) var lastSyncError: String?
     /// When this device last finished a sync round without errors, for the
@@ -37,7 +39,7 @@ public final class TodoModel {
     // `nil` when no Supabase project is configured — sync is opt-in, so the
     // app must work fully with no backend wired up at all.
     private let syncClient: SyncClient?
-    // Kept alive for the lifetime of `TodoModel`: `startAutoSync` is only
+    // Kept alive for the lifetime of `RememberModel`: `startAutoSync` is only
     // ever called once, so this is the one listener its coordinator reports
     // through -- every round -- for as long as the app runs.
     private var autoSyncBridge: SyncStatusBridge?
@@ -49,7 +51,7 @@ public final class TodoModel {
     ) throws {
         // `open` collides with Swift's `open` access-level keyword, so the
         // generated binding escapes it with backticks — confirmed by
-        // reading the actual generated todo_ffi.swift, not assumed.
+        // reading the actual generated remember_ffi.swift, not assumed.
         self.app = try App.`open`(dbPath: dbPath)
 
         // `syncClient` is a `let`, so — unlike the `var` properties below,
@@ -108,7 +110,7 @@ public final class TodoModel {
 
     /// Switches which list the snapshot reflects (`snapshot?.currentList`)
     /// and the one new captures land in — see
-    /// `todo_core::App::set_current_list`'s own doc comment. Same
+    /// `remember_core::App::set_current_list`'s own doc comment. Same
     /// swallow-and-log error handling as `dispatch`: a failed local write
     /// isn't something call sites should need a `do`/`catch` for.
     public func setCurrentList(_ listId: String) {
@@ -184,7 +186,7 @@ public final class TodoModel {
     /// devices stay signed in). The local part happens first and never
     /// depends on the network. If a *different* account signs in next, its
     /// first sync round resets local data (`App::bind_sync_account` on the
-    /// Rust side), so the two accounts' todos never mix.
+    /// Rust side), so the two accounts' tasks never mix.
     public func signOut() {
         let session = loadSession()
         do {

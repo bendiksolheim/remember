@@ -1,4 +1,4 @@
--- Sync backend schema for the todo app.
+-- Sync backend schema for the task app.
 --
 -- Run this once in a fresh Supabase project (SQL Editor → New query → paste
 -- → Run). Safe to re-run: every statement is idempotent.
@@ -11,7 +11,7 @@
 -- deleted. So each account holds one snapshot row plus a short tail, however
 -- long it has been in use. Nothing here does any merge logic — Loro's own
 -- import is commutative and idempotent, so this is purely "store bytes, hand
--- them back in order." See `crates/sync` (`todo-sync`) for the Rust side.
+-- them back in order." See `crates/sync` (`remember-sync`) for the Rust side.
 --
 -- Clients only ever go through the three `sync_*` functions below, never
 -- the tables: the functions take a per-account lock and read consistently,
@@ -53,7 +53,7 @@ alter table sync_log alter column account_id set default auth.uid();
 alter table sync_snapshots alter column account_id set default auth.uid();
 
 -- Same for `on delete cascade`: deleting a user in Supabase removes their
--- log and snapshot instead of failing. Their devices keep their local todos.
+-- log and snapshot instead of failing. Their devices keep their local tasks.
 alter table sync_log
   drop constraint if exists sync_log_account_id_fkey,
   add constraint sync_log_account_id_fkey

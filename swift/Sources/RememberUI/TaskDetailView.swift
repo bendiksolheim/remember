@@ -1,9 +1,9 @@
 import SwiftUI
-import TodoKit
+import RememberKit
 
 public struct TaskDetailView: SwiftUI.View {
     let row: TaskRow
-    @Environment(TodoModel.self) private var model
+    @Environment(RememberModel.self) private var model
 
     @State private var title: String
     @State private var notes: String

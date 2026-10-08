@@ -1,11 +1,11 @@
 import SwiftUI
 
 /// Maps a list's persisted `ListColor` slot to an actual `Color`. The
-/// mapping lives here, in the UI layer, not in `todo-core` — `ListColor` is
+/// mapping lives here, in the UI layer, not in `remember-core` — `ListColor` is
 /// an opaque palette slot rather than a stored hex value specifically so
 /// re-theming this mapping never touches stored data (see `ListColor`'s own
-/// doc comment in `todo-core`). Shared by `TodoMac` (`ListPillRow`,
-/// `ListsSettingsView`) and `TodoUI`/iOS so a list's color means the same
+/// doc comment in `remember-core`). Shared by `RememberMac` (`ListPillRow`,
+/// `ListsSettingsView`) and `RememberUI`/iOS so a list's color means the same
 /// thing everywhere it's used.
 public func color(for listColor: ListColor) -> Color {
     switch listColor {

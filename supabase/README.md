@@ -1,7 +1,7 @@
 # Sync backend setup (Supabase)
 
 This is the recipe for standing up the backend that device sync (`crates/sync`,
-`todo-sync`) talks to. Sync is opt-in — the app works fully with none of this
+`remember-sync`) talks to. Sync is opt-in — the app works fully with none of this
 done — so there's no rush to do this until you actually want to test syncing
 across devices.
 
@@ -46,7 +46,7 @@ Authentication → Providers:
 
 - **Email** is on by default — sign-up/sign-in with email+password works
   with no further setup, and this is what `AuthClient::sign_up`/`sign_in`
-  in `todo-sync` use.
+  in `remember-sync` use.
 - **Apple** ("Sign in with Apple") if you want it as an option — this is a
   separate identity provider from iCloud and does **not** require the
   device be logged into iCloud, which is exactly why it was chosen over
@@ -62,7 +62,7 @@ Authentication → Providers:
 Project Settings → API:
 
 - **Project URL** — the *bare* project URL (`https://<ref>.supabase.co`),
-  no path suffix. `todo-sync`'s `HttpTransport`/`AuthClient` append
+  no path suffix. `remember-sync`'s `HttpTransport`/`AuthClient` append
   `/rest/v1/...` and `/auth/v1/...` themselves — passing a URL that
   already includes `/rest/v1/` double-prefixes every request and 404s.
 - **`anon`/`publishable` key** (safe to embed in a client — RLS is what
@@ -72,13 +72,13 @@ Project Settings → API:
   it's just passed straight through as the `apikey` header.
 
 These are the two values `SyncClient::new(supabaseUrl:anonKey:)`
-(`crates/ffi/src/lib.rs`) takes, surfaced as `TodoModel`'s `supabaseURL`/
+(`crates/ffi/src/lib.rs`) takes, surfaced as `RememberModel`'s `supabaseURL`/
 `supabaseAnonKey` init parameters.
 
 ## 5. Wire them into the app
 
-Currently hardcoded at the `TodoModel(...)` call site in
-`swift/Sources/TodoMac/AppDelegate.swift` — there's no secret-management
+Currently hardcoded at the `RememberModel(...)` call site in
+`swift/Sources/RememberMac/AppDelegate.swift` — there's no secret-management
 story yet (no `.xcconfig`, no keychain bootstrap, nothing read from
 environment). Since the anon/publishable key is meant to be public (see
 step 4), hardcoding it in a tracked source file is a reasonable stopgap for
@@ -87,7 +87,7 @@ revisiting (env var, `.xcconfig`, or a settings field in the app itself)
 before this is ever a build someone other than you runs.
 
 Once wired, the status-bar menu ("Sync…") opens a small window
-(`SyncSettingsView`/`SettingsWindowController` in `swift/Sources/TodoMac/`)
+(`SyncSettingsView`/`SettingsWindowController` in `swift/Sources/RememberMac/`)
 to sign up/in and trigger a manual sync — that's the only UI surface for
 sync right now, deliberately minimal.
 

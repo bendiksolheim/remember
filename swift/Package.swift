@@ -8,32 +8,32 @@ import PackageDescription
 let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
 
 let package = Package(
-    name: "Todo",
+    name: "Remember",
     platforms: [.macOS(.v14), .iOS(.v17)],
     products: [
-        .library(name: "TodoApp", targets: ["TodoApp"]),      // iOS entry (xtool)
-        .executable(name: "TodoMac", targets: ["TodoMac"]),   // macOS entry
+        .library(name: "RememberApp", targets: ["RememberApp"]),      // iOS entry (xtool)
+        .executable(name: "RememberMac", targets: ["RememberMac"]),   // macOS entry
     ],
     targets: [
-        .systemLibrary(name: "TodoFFI", path: "Sources/TodoFFI"),
+        .systemLibrary(name: "RememberFFI", path: "Sources/RememberFFI"),
         .target(
-            name: "TodoKit",
-            dependencies: ["TodoFFI"],
+            name: "RememberKit",
+            dependencies: ["RememberFFI"],
             linkerSettings: [
-                .unsafeFlags(["-L\(packageDir)/Sources/TodoFFI/lib"]),
-                .linkedLibrary("todo_ffi"),
+                .unsafeFlags(["-L\(packageDir)/Sources/RememberFFI/lib"]),
+                .linkedLibrary("remember_ffi"),
             ]
         ),
-        .target(name: "TodoUI", dependencies: ["TodoKit"]),
-        // TodoKit isn't just transitive here either (see the same note on
-        // TodoMac below): TodoIOSApp.swift constructs TodoModel directly.
-        .target(name: "TodoApp", dependencies: ["TodoUI", "TodoKit"]),
-        // TodoKit isn't just transitive here: AppDelegate.swift constructs
-        // TodoModel directly, and SwiftPM requires importing a module to be
+        .target(name: "RememberUI", dependencies: ["RememberKit"]),
+        // RememberKit isn't just transitive here either (see the same note on
+        // RememberMac below): RememberIOSApp.swift constructs RememberModel directly.
+        .target(name: "RememberApp", dependencies: ["RememberUI", "RememberKit"]),
+        // RememberKit isn't just transitive here: AppDelegate.swift constructs
+        // RememberModel directly, and SwiftPM requires importing a module to be
         // a direct dependency of the target, not just of one of its deps.
-        // TodoMac no longer depends on TodoUI: the Spotlight-style panel is
+        // RememberMac no longer depends on RememberUI: the Spotlight-style panel is
         // its own Mac-only UI (CaptureView.swift), and TaskListView/
-        // TaskDetailView remain in use only by TodoApp (iOS).
-        .executableTarget(name: "TodoMac", dependencies: ["TodoKit"]),
+        // TaskDetailView remain in use only by RememberApp (iOS).
+        .executableTarget(name: "RememberMac", dependencies: ["RememberKit"]),
     ]
 )

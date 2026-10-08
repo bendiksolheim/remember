@@ -1,20 +1,20 @@
 import SwiftUI
-import TodoKit
-import TodoUI
+import RememberKit
+import RememberUI
 
-// TodoKit's generated `App`/`View` collide with `SwiftUI.App`/`SwiftUI.View`
+// RememberKit's generated `App`/`View` collide with `SwiftUI.App`/`SwiftUI.View`
 // once both modules are imported in the same file — see TaskRowView.swift's
-// note in TodoUI. `SwiftUI.App`/`SwiftUI.Scene` are qualified explicitly
+// note in RememberUI. `SwiftUI.App`/`SwiftUI.Scene` are qualified explicitly
 // below rather than trusting contextual resolution.
 
 @main
-public struct TodoIOSApp: SwiftUI.App {
-    // `try!`, matching AppDelegate's own construction of `TodoModel` on
+public struct RememberIOSApp: SwiftUI.App {
+    // `try!`, matching AppDelegate's own construction of `RememberModel` on
     // Mac: both are app-bootstrap code where a failure here means the app
     // can't run at all, not a recoverable per-request error. No Supabase
     // credentials wired up here yet — sync stays opt-in/disabled on iOS
-    // until that's asked for, same as `TodoModel`'s own default.
-    @State private var model = try! TodoModel()
+    // until that's asked for, same as `RememberModel`'s own default.
+    @State private var model = try! RememberModel()
     @Environment(\.scenePhase) private var scenePhase
 
     public init() {}

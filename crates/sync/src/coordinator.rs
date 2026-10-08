@@ -5,7 +5,7 @@
 //! for either of the other two.
 //!
 //! Deliberately reuses `App::subscribe` rather than adding anything new to
-//! `todo-core` — `todo-core` has no idea sync exists; this crate just
+//! `remember-core` — `remember-core` has no idea sync exists; this crate just
 //! listens to the same "something changed" signal the UI already does.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use todo_core::App;
+use remember_core::App;
 
 use crate::auth::{AuthClient, Session};
 use crate::engine::{SyncEngine, SyncOutcome};
@@ -28,7 +28,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Debug, Clone, Copy)]
 pub struct CoordinatorConfig {
     /// How long local changes must sit untouched before they're worth
-    /// pushing. Independent of (though matching, by default) `todo-core`'s
+    /// pushing. Independent of (though matching, by default) `remember-core`'s
     /// own disk-flush debounce — the two timers don't coordinate, they just
     /// happen to agree on a reasonable window.
     pub debounce: Duration,
@@ -137,7 +137,7 @@ impl State {
 }
 
 /// Owns the background thread; dropping it stops the loop and joins the
-/// thread, mirroring `todo_core::App`'s own writer-thread lifecycle.
+/// thread, mirroring `remember_core::App`'s own writer-thread lifecycle.
 pub struct AutoSyncCoordinator {
     state: Arc<State>,
     handle: Option<JoinHandle<()>>,
@@ -270,8 +270,8 @@ impl Drop for AutoSyncCoordinator {
 mod tests {
     use std::sync::mpsc;
 
+    use remember_core::{Command, FixedClock};
     use tempfile::TempDir;
-    use todo_core::{Command, FixedClock};
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

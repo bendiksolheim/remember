@@ -4,7 +4,7 @@ import ServiceManagement
 import SwiftUI
 
 /// The keyboard shortcut, opening at login, and the version. Nothing here
-/// touches `TodoModel`: all of it is about this Mac, not about todos.
+/// touches `RememberModel`: all of it is about this Mac, not about tasks.
 struct GeneralSettingsView: SwiftUI.View {
     let hotKey: HotKeyStatus
 
@@ -33,7 +33,7 @@ struct GeneralSettingsView: SwiftUI.View {
 
     private var shortcutSection: some SwiftUI.View {
         Section {
-            LabeledContent("Open Todo") {
+            LabeledContent("Open Remember") {
                 Text(hotKey.shortcut)
                     .font(.body.monospaced())
                     .padding(.horizontal, 6)
@@ -42,7 +42,7 @@ struct GeneralSettingsView: SwiftUI.View {
             }
             if !hotKey.isRegistered {
                 Label {
-                    Text("Another app is already using \(hotKey.shortcut), so the shortcut doesn't open Todo. Quit that app or change its shortcut, then restart Todo.")
+                    Text("Another app is already using \(hotKey.shortcut), so the shortcut doesn't open Remember. Quit that app or change its shortcut, then restart Remember.")
                 } icon: {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.yellow)
@@ -51,21 +51,21 @@ struct GeneralSettingsView: SwiftUI.View {
         } header: {
             Text("Keyboard Shortcut")
         } footer: {
-            Text("Press it in any app to add a todo or see your list. Press it again, or Esc, to put it away.")
+            Text("Press it in any app to add a task or see your list. Press it again, or Esc, to put it away.")
                 .foregroundStyle(.secondary)
         }
     }
 
     private var loginItemSection: some SwiftUI.View {
         Section {
-            Toggle("Open Todo at login", isOn: Binding(
+            Toggle("Open Remember at login", isOn: Binding(
                 get: { loginItem.isOn },
                 set: { loginItem.set($0) }
             ))
 
             if loginItem.needsApproval {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("macOS needs your permission before Todo can open at login. Turn on Todo under Login Items in System Settings.")
+                    Text("macOS needs your permission before Remember can open at login. Turn on Remember under Login Items in System Settings.")
                     Button("Open Login Items Settings…") {
                         SMAppService.openSystemSettingsLoginItems()
                     }
@@ -79,7 +79,7 @@ struct GeneralSettingsView: SwiftUI.View {
         } header: {
             Text("Startup")
         } footer: {
-            Text("Todo lives in the menu bar. The shortcut only works while Todo is running, so opening it at login means it's always ready.")
+            Text("Remember lives in the menu bar. The shortcut only works while Remember is running, so opening it at login means it's always ready.")
                 .foregroundStyle(.secondary)
         }
     }
@@ -88,8 +88,8 @@ struct GeneralSettingsView: SwiftUI.View {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
         // "dev" is what the checked-in Info.plist says; `cargo xtask package`
         // replaces it with the release version.
-        guard let version, version != "dev" else { return "Todo (development build)" }
-        return "Todo \(version)"
+        guard let version, version != "dev" else { return "Remember (development build)" }
+        return "Remember \(version)"
     }
 }
 
@@ -102,7 +102,7 @@ private final class LoginItem {
     private(set) var status: SMAppService.Status = SMAppService.mainApp.status
     private(set) var error: String?
 
-    /// `requiresApproval` counts as on: Todo is registered, macOS just
+    /// `requiresApproval` counts as on: Remember is registered, macOS just
     /// hasn't been allowed to act on it yet (see `needsApproval`).
     var isOn: Bool { status == .enabled || status == .requiresApproval }
     var needsApproval: Bool { status == .requiresApproval }

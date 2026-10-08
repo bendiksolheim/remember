@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use proptest::prelude::*;
-use todo_core::{Command, Doc, FixedClock, IdSource, Snapshot, TaskRow, ViewFilter};
+use remember_core::{Command, Doc, FixedClock, IdSource, Snapshot, TaskRow, ViewFilter};
 
 /// Deterministic, per-peer-unique id source. `SeqIdSource` alone would let
 /// two independently-generated peer sequences collide on the same ids

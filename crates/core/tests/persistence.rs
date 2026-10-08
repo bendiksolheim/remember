@@ -2,8 +2,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use remember_core::{App, Command, CoreError, Store, ViewFilter};
 use tempfile::TempDir;
-use todo_core::{App, Command, CoreError, Store, ViewFilter};
 
 fn db_path(dir: &TempDir, name: &str) -> String {
     dir.path().join(name).to_str().unwrap().to_string()

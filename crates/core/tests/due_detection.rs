@@ -8,8 +8,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use remember_core::App;
 use tempfile::TempDir;
-use todo_core::App;
 
 fn app(dir: &TempDir) -> App {
     App::open(dir.path().join("todo.sqlite3").to_str().unwrap()).unwrap()

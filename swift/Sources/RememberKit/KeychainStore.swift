@@ -22,6 +22,8 @@ struct KeychainError: Error, CustomStringConvertible {
 /// signed build can't carry. Switching (with a migration of the existing
 /// item) waits on Developer ID signing — security report findings 3 and 9.
 enum KeychainStore {
+    // Still named after the app's original "todo" bundle ID: renaming it
+    // would sign every existing install out.
     private static let service = "no.bendik.todo.sync"
     private static let account = "session"
 

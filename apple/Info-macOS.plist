@@ -3,8 +3,9 @@
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key>              <string>Todo</string>
-  <key>CFBundleExecutable</key>        <string>Todo</string>
+  <key>CFBundleName</key>              <string>Remember</string>
+  <key>CFBundleExecutable</key>        <string>Remember</string>
+  <!-- Kept from the app's original name, "todo": changing it orphans existing data. -->
   <key>CFBundleIdentifier</key>        <string>no.bendik.todo</string>
   <key>CFBundlePackageType</key>       <string>APPL</string>
   <key>CFBundleVersion</key>           <string>0</string>

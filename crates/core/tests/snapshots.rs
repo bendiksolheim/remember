@@ -1,5 +1,5 @@
-use todo_core::snapshot::due_label;
-use todo_core::{Command, Doc, FixedClock, SeqIdSource, ViewFilter};
+use remember_core::snapshot::due_label;
+use remember_core::{Command, Doc, FixedClock, SeqIdSource, ViewFilter};
 
 const DAY: i64 = 86_400;
 
