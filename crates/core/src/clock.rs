@@ -31,6 +31,12 @@ impl IdSource for UuidSource {
     }
 }
 
+/// A random per-install Loro peer id. Derived from a fresh random UUID
+/// rather than adding a `rand` dependency solely for one random u64.
+pub fn fresh_peer_id() -> u64 {
+    Uuid::new_v4().as_u64_pair().0
+}
+
 #[cfg(any(test, feature = "testing"))]
 pub struct FixedClock(pub i64);
 

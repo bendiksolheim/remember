@@ -1,4 +1,5 @@
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(tag = "type")]
 pub enum Command {
     /// `after: None` inserts at the top. `list_id: None` means "whichever
     /// list is currently active" — resolved by `crate::App::dispatch`, not
@@ -63,10 +64,38 @@ pub enum Command {
     Redo,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ViewFilter {
     #[default]
     All,
     Active,
     Completed,
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    /// The web build receives commands as JS objects in this shape.
+    #[test]
+    fn deserializes_internally_tagged_json() {
+        let add: Command = serde_json::from_str(
+            r#"{"type":"Add","title":"Milk","after":null,"due":5,"list_id":null}"#,
+        )
+        .expect("add");
+        assert_eq!(
+            add,
+            Command::Add {
+                title: "Milk".into(),
+                after: None,
+                due: Some(5),
+                list_id: None,
+            }
+        );
+        let undo: Command = serde_json::from_str(r#"{"type":"Undo"}"#).expect("undo");
+        assert_eq!(undo, Command::Undo);
+        let view: ViewFilter = serde_json::from_str(r#""Completed""#).expect("view");
+        assert_eq!(view, ViewFilter::Completed);
+    }
 }

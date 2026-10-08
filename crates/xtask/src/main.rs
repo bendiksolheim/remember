@@ -21,9 +21,10 @@ fn main() -> Result<()> {
         Some("cov") => cov(),
         Some("ci") => ci(),
         Some("pgtest") => pgtest(),
+        Some("web") => web(),
         Some(other) => bail!("unknown xtask command: {other}"),
         None => bail!(
-            "usage: cargo xtask <bindings|build|mac|run|sim|device|package|test|cov|ci|pgtest>"
+            "usage: cargo xtask <bindings|build|mac|run|sim|device|package|test|cov|ci|pgtest|web>"
         ),
     }
 }
@@ -146,6 +147,39 @@ fn place_generated_file(from: &Path, to: &Path) -> Result<()> {
     }
     fs::copy(from, to)
         .with_context(|| format!("copying {} -> {}", from.display(), to.display()))?;
+    Ok(())
+}
+
+/// Builds the browser demo engine into `site/pkg` (gitignored); serve
+/// `site/` with any static file server to try it. The Pages workflow runs
+/// this too. Needs the `wasm32-unknown-unknown` target and a `wasm-bindgen`
+/// CLI matching the `wasm-bindgen` version in Cargo.lock.
+fn web() -> Result<()> {
+    let meta = cargo_metadata()?;
+
+    run_cmd(Command::new("cargo").args([
+        "build",
+        "-p",
+        "remember-web",
+        "--profile",
+        "web",
+        "--target",
+        "wasm32-unknown-unknown",
+    ]))?;
+
+    let wasm = meta
+        .target_directory
+        .join("wasm32-unknown-unknown/web/remember_web.wasm");
+    let out_dir = meta.workspace_root.join("site/pkg");
+    run_cmd(
+        Command::new("wasm-bindgen")
+            .args(["--target", "web", "--out-dir"])
+            .arg(&out_dir)
+            .arg(&wasm),
+    )?;
+
+    println!("Built {}. Serve site/, e.g.:", out_dir.display());
+    println!("  python3 -m http.server -d site 8000");
     Ok(())
 }
 

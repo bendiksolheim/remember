@@ -1,0 +1,76 @@
+name: Pages
+
+# Builds the product page in `site/`, including the wasm demo engine
+# (`cargo xtask web`), and deploys it to GitHub Pages. The built wasm is
+# only ever a Pages artifact — never committed. Needs the repo's Pages
+# source set to "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "crates/core/**"
+      - "crates/web/**"
+      - "crates/xtask/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy at a time; a newer push supersedes a queued one, but never
+# cancels a deploy already in progress.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install wasm target
+        run: rustup target add wasm32-unknown-unknown
+
+      # The CLI must match the `wasm-bindgen` crate version exactly.
+      - name: Read wasm-bindgen version from Cargo.lock
+        id: wasm-bindgen
+        run: |
+          version=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Could not read wasm-bindgen version from Cargo.lock"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with:
+          tool: wasm-bindgen@${{ steps.wasm-bindgen.outputs.version }}
+
+      - name: cargo xtask web
+        run: cargo xtask web
+
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

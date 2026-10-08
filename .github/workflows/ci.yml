@@ -23,3 +23,18 @@ jobs:
 
       - name: cargo xtask ci
         run: cargo xtask ci
+
+  # The browser demo builds `remember-core` without its `native` feature
+  # (no SQLite), which the workspace build above never does.
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install Rust
+        run: |
+          rustup component add clippy
+          rustup target add wasm32-unknown-unknown
+
+      - name: clippy (wasm32)
+        run: cargo clippy -p remember-web --target wasm32-unknown-unknown -- -D warnings

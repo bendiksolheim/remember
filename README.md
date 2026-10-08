@@ -15,14 +15,21 @@ for the sync backend specifically.
 - **`crates/core` (`remember-core`)** — all domain logic. Tasks are stored in a
   [Loro](https://loro.dev) CRDT document (`src/doc.rs` is the only file that
   mentions Loro), persisted to SQLite as an opaque snapshot blob
-  (`src/store.rs`). `remember_core::App` ties the document, storage, and a
-  debounced background writer together, and is the type the Swift
-  frontend actually talks to.
+  (`src/store.rs`). `remember_core::Session` holds the document plus what a
+  client is looking at (view, current list) with no I/O; `remember_core::App`
+  wraps it with storage and a debounced background writer, and is the type
+  the Swift frontend actually talks to. SQLite, `Store` and `App` sit behind
+  the default `native` feature so the rest builds for wasm.
 - **`crates/ffi` (`remember-ffi`)** — a thin [UniFFI](https://mozilla.github.io/uniffi-rs/)
   wrapper around `remember_core::App`, exporting `Command`, `Snapshot`, `TaskRow`,
   `View`, and `App` to Swift. `src/convert.rs` holds every conversion between
   core types and their FFI mirrors and is the only file in this crate held to
   100% test coverage — `src/lib.rs` is pure delegation, nothing to test.
+- **`crates/web` (`remember-web`)** — a wasm-bindgen wrapper around
+  `remember_core::Session`: the engine behind the product page demo.
+- **`site/`** — the static product page, deployed to GitHub Pages by
+  `.github/workflows/pages.yml`. Its demo runs the real core as wasm,
+  seeded with sample tasks on every visit; nothing is saved, no sync.
 - **`crates/xtask`** — the build system (see [Commands](#commands) below).
   An ordinary Rust binary that shells out to `cargo`, `swift`, `xtool`, and
   `codesign` — no Makefile, no shell scripts.
@@ -96,6 +103,7 @@ Everything goes through `cargo xtask`, aliased in `.cargo/config.toml`:
 | `cargo xtask sim` | Builds for the iOS Simulator target, then `xtool dev --simulator` |
 | `cargo xtask device` | Builds for the iOS device target, then `xtool dev` (installs on a connected/paired device) |
 | `cargo xtask package --version <x>` | `mac`, then archives `build/Remember.app` into `build/Remember-<x>-macos-arm64.zip` via `ditto` and prints the zip path and its sha256 — what CI uses to cut a release |
+| `cargo xtask web` | Builds `remember-web` for `wasm32-unknown-unknown` (`[profile.web]`: release plus `panic = "abort"`, stripped) and runs `wasm-bindgen` into `site/pkg/` (gitignored); serve `site/` with any static server, e.g. `python3 -m http.server -d site 8000`. Needs `rustup target add wasm32-unknown-unknown` and `wasm-bindgen-cli` at the same version as `wasm-bindgen` in `Cargo.lock` |
 
 `mac`, `run`, `sim`, and `device` all require macOS and refuse to run
 anywhere else. `bindings`, `test`, `cov`, and `ci` are plain Rust and work on

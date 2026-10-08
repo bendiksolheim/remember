@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/sync", "crates/ffi", "crates/sql-tests", "crates/xtask"]
+members = ["crates/core", "crates/sync", "crates/ffi", "crates/sql-tests", "crates/web", "crates/xtask"]
 
 [workspace.package]
 edition = "2021"
@@ -9,3 +9,12 @@ version = "0.1.0"
 [profile.release]
 lto = true
 opt-level = "z"
+
+# The browser demo (`cargo xtask web`). Kept apart from `release`:
+# `panic = "abort"` there would stop UniFFI turning Rust panics into Swift
+# errors.
+[profile.web]
+inherits = "release"
+codegen-units = 1
+panic = "abort"
+strip = true

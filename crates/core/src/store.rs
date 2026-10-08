@@ -5,8 +5,8 @@
 
 use std::sync::Mutex;
 
+use crate::clock::fresh_peer_id;
 use rusqlite::{Connection, OptionalExtension};
-use uuid::Uuid;
 
 use crate::CoreError;
 
@@ -27,12 +27,6 @@ CREATE TABLE IF NOT EXISTS meta (
 
 fn store_err<E: std::fmt::Display>(e: E) -> CoreError {
     CoreError::Storage(e.to_string())
-}
-
-/// Derived from a fresh random UUID rather than adding a `rand` dependency
-/// solely for one random u64.
-pub(crate) fn fresh_peer_id() -> u64 {
-    Uuid::new_v4().as_u64_pair().0
 }
 
 pub struct Store {

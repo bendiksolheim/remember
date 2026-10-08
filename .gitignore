@@ -10,3 +10,4 @@
 /mutants.out/
 /mutants.out.old/
 .DS_Store
+/site/pkg/

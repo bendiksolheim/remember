@@ -1,0 +1,16 @@
+[package]
+name = "remember-web"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+js-sys = "0.3"
+remember-core = { version = "0.1.0", path = "../core", default-features = false }
+serde-wasm-bindgen = "0.6"
+# `UuidSource` needs a randomness source on wasm32-unknown-unknown.
+uuid = { version = "1.26.0", features = ["js"] }
+wasm-bindgen = "0.2"

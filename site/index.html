@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Remember</title>
+  <style>
+    :root {
+      --bg: #f5f5f7; --panel: #fff; --text: #1d1d1f; --muted: #86868b;
+      --line: #e5e5ea; --accent: #0a84ff; --overdue: #ff3b30; --today: #ff9500;
+      --Blue: #0a84ff; --Purple: #af52de; --Pink: #ff2d55; --Orange: #ff9500; --Teal: #30b0c7;
+      --Indigo: #5856d6; --Mint: #00c7be; --Yellow: #ffcc00; --Cyan: #32ade6;
+      color-scheme: light dark;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #1c1c1e; --panel: #2c2c2e; --text: #f5f5f7; --muted: #98989d; --line: #3a3a3c; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text);
+      font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+    .app { display: grid; grid-template-columns: 220px 1fr; max-width: 900px; min-height: 100vh; margin: 0 auto; }
+    aside { padding: 24px 12px; border-right: 1px solid var(--line); }
+    main { padding: 24px 16px; min-width: 0; }
+    .lists { list-style: none; margin: 0; padding: 0; }
+    .lists li { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 8px; cursor: pointer; }
+    .lists li.current { background: var(--panel); font-weight: 600; }
+    .lists .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+    .lists .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lists .count { color: var(--muted); font-size: 13px; }
+    .lists .del { visibility: hidden; border: 0; background: none; color: var(--muted); cursor: pointer; }
+    .lists li:hover .del { visibility: visible; }
+    form.new-list input { width: 100%; margin-top: 8px; }
+    h1 { margin: 0 0 16px; font-size: 26px; }
+    header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+    header h1 { flex: 1; margin: 0; }
+    .seg { display: inline-flex; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    .seg button, .btn { border: 0; background: none; color: var(--text); padding: 5px 10px; cursor: pointer; font: inherit; font-size: 13px; }
+    .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+    .btn:disabled { color: var(--muted); cursor: default; }
+    input[type=text] { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line);
+      border-radius: 8px; padding: 8px 10px; outline: none; }
+    input[type=text]:focus { border-color: var(--accent); }
+    .capture { position: relative; margin-bottom: 12px; }
+    .capture input { width: 100%; padding-right: 110px; }
+    .chip { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 12px;
+      background: var(--accent); color: #fff; padding: 2px 8px; border-radius: 10px; }
+    .tasks { list-style: none; margin: 0; padding: 0; background: var(--panel); border-radius: 10px; overflow: hidden; }
+    .tasks li { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+    .tasks li:last-child { border-bottom: 0; }
+    .tasks li.done .title { color: var(--muted); text-decoration: line-through; }
+    .tasks .title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .tasks .title input { width: 100%; }
+    .tasks .due { font-size: 12px; color: var(--muted); }
+    .tasks .due.Today { color: var(--today); }
+    .tasks .due.Overdue { color: var(--overdue); }
+    .tasks .del { visibility: hidden; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 16px; }
+    .tasks li:hover .del { visibility: visible; }
+    .empty { color: var(--muted); text-align: center; padding: 32px; }
+    footer { color: var(--muted); font-size: 13px; margin-top: 12px; }
+    @media (max-width: 640px) {
+      .app { grid-template-columns: 1fr; }
+      aside { border-right: 0; border-bottom: 1px solid var(--line); padding: 16px; }
+      .tasks .del, .lists .del { visibility: visible; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <ul class="lists" id="lists"></ul>
+      <form class="new-list" id="new-list"><input type="text" placeholder="New list" aria-label="New list"></form>
+    </aside>
+    <main>
+      <header>
+        <h1 id="list-name"></h1>
+        <div class="seg" id="views">
+          <button data-view="All">All</button><button data-view="Active">Active</button><button data-view="Completed">Done</button>
+        </div>
+        <button class="btn" id="undo" title="Undo (⌘Z)">Undo</button>
+        <button class="btn" id="redo" title="Redo (⇧⌘Z)">Redo</button>
+      </header>
+      <form class="capture" id="capture">
+        <input type="text" placeholder="Add a task — try “call mum tomorrow”" aria-label="New task" autofocus>
+        <span class="chip" id="chip" hidden></span>
+      </form>
+      <ul class="tasks" id="tasks"></ul>
+      <footer id="footer"></footer>
+    </main>
+  </div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
