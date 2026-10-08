@@ -185,7 +185,7 @@ impl App {
     /// Fills in `Command::Add`'s `list_id` with the sticky current capture
     /// list when the caller didn't specify one — the one piece of "which
     /// list is this app currently pointed at" business logic, kept here so
-    /// every caller (CLI, Swift) gets it for free rather than reimplementing
+    /// every caller gets it for free rather than reimplementing
     /// it per platform.
     fn resolve_capture_list(command: Command, capture_list_id: &str) -> Command {
         match command {

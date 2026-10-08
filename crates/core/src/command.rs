@@ -3,7 +3,7 @@ pub enum Command {
     /// `after: None` inserts at the top. `list_id: None` means "whichever
     /// list is currently active" — resolved by `crate::App::dispatch`, not
     /// `Doc` itself, which falls back to the default list so callers that
-    /// don't know about lists (the CLI, most existing tests) keep working
+    /// don't know about lists (most existing tests) keep working
     /// unchanged. See `Doc`'s module doc comment for the default list's
     /// fixed id.
     Add {

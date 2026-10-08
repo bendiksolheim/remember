@@ -377,8 +377,7 @@ struct CaptureView: SwiftUI.View {
     /// easier-to-regret jump than just moving focus there.
     ///
     /// `Move`'s `after` is relational (remember-core resolves it directly
-    /// against its own order, same as the CLI's `mv` does against a
-    /// snapshot) -- here that means "the id `rows` already puts right where
+    /// against its own order) -- here that means "the id `rows` already puts right where
     /// the focused row should land": moving down lands right after the
     /// neighbor being passed, moving up lands right after whatever was two
     /// slots up (or at the front, if the neighbor was already first).

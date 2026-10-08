@@ -2,7 +2,7 @@ import Foundation
 import Observation
 
 // Folder and file still carry the app's original name, "todo": renaming them
-// would orphan existing data. Same names as the CLI's `default_db_path`.
+// would orphan existing data.
 public func defaultDatabasePath() -> String {
     let dir = FileManager.default
         .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

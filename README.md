@@ -16,15 +16,13 @@ for the sync backend specifically.
   [Loro](https://loro.dev) CRDT document (`src/doc.rs` is the only file that
   mentions Loro), persisted to SQLite as an opaque snapshot blob
   (`src/store.rs`). `remember_core::App` ties the document, storage, and a
-  debounced background writer together, and is the type every frontend
-  (Swift, CLI) actually talks to.
+  debounced background writer together, and is the type the Swift
+  frontend actually talks to.
 - **`crates/ffi` (`remember-ffi`)** — a thin [UniFFI](https://mozilla.github.io/uniffi-rs/)
   wrapper around `remember_core::App`, exporting `Command`, `Snapshot`, `TaskRow`,
   `View`, and `App` to Swift. `src/convert.rs` holds every conversion between
   core types and their FFI mirrors and is the only file in this crate held to
   100% test coverage — `src/lib.rs` is pure delegation, nothing to test.
-- **`crates/cli` (`remember-cli`)** — a debug REPL over the same `remember_core::App`
-  used for early dogfooding. Not a shipping product surface.
 - **`crates/xtask`** — the build system (see [Commands](#commands) below).
   An ordinary Rust binary that shells out to `cargo`, `swift`, `xtool`, and
   `codesign` — no Makefile, no shell scripts.
@@ -196,8 +194,6 @@ Add anything reported as a `.linkedLibrary(...)` entry in `swift/Package.swift`.
 
 - macOS: `~/Library/Application Support/no.bendik.todo/todo.sqlite3`
 - iOS: the app container's own Application Support directory
-- CLI: platform data directory (via the `dirs` crate) — run `remember-cli
-  <path>` to point it at a specific file instead (handy for testing)
 
 The SQLite file holds exactly two things: the latest exported Loro snapshot
 (`doc` table) and a random per-install peer id (`meta` table, generated once,
@@ -205,25 +201,6 @@ stable for the life of the install — never share a peer id across devices).
 There are no normalized task tables; the CRDT document is the source of
 truth, and the whole list comfortably fits in memory for any real personal
 task list.
-
-## CLI
-
-`cargo run -p remember-cli [db-path]` opens a REPL using the same `remember_core::App`
-type the GUI uses, and can point at the same database file — though undo/redo
-history is per-process (it's not persisted to disk), so it won't carry over
-between the CLI and a running GUI instance even when both target the same
-file:
-
-```
-add <title>       ls                done <n>
-rm <n>            mv <n> <m>        undo / redo
-quit
-```
-
-Indices are 1-based positions in the currently-displayed list, not UUIDs.
-`mv <n> <m>` moves item `n` to right after item `m` (relational, matching
-`Command::Move`'s own semantics — the same primitive drag-and-drop in the
-GUI uses) — not "to position `m`".
 
 ## Out of scope (v1)
 
