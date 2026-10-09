@@ -5,87 +5,109 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Remember</title>
   <style>
+    /* A copy of the macOS capture panel (swift/Sources/RememberMac/CaptureView.swift
+       and SpotlightPanel.swift). That panel always renders dark on a .hudWindow
+       material, whatever the system appearance, so this page does too. */
     :root {
-      --bg: #f5f5f7; --panel: #fff; --text: #1d1d1f; --muted: #86868b;
-      --line: #e5e5ea; --accent: #0a84ff; --overdue: #ff3b30; --today: #ff9500;
-      --Blue: #0a84ff; --Purple: #af52de; --Pink: #ff2d55; --Orange: #ff9500; --Teal: #30b0c7;
-      --Indigo: #5856d6; --Mint: #00c7be; --Yellow: #ffcc00; --Cyan: #32ade6;
-      color-scheme: light dark;
-    }
-    @media (prefers-color-scheme: dark) {
-      :root { --bg: #1c1c1e; --panel: #2c2c2e; --text: #f5f5f7; --muted: #98989d; --line: #3a3a3c; }
+      color-scheme: dark;
+      --text: #fff;
+      --secondary: rgba(235, 235, 245, 0.6);
+      --divider: rgba(255, 255, 255, 0.1);
+      --accent: #0a84ff;
+      --red: #ff453a;
+      --orange: #ff9f0a;
+      /* ListColor slots as macOS dark-mode system colors (see ListColor.swift). */
+      --Blue: #0a84ff; --Purple: #bf5af2; --Pink: #ff375f; --Orange: #ff9f0a; --Teal: #40cbe0;
+      --Indigo: #5e5ce6; --Mint: #63e6e2; --Yellow: #ffd60a; --Cyan: #64d2ff;
+      /* PanelMetrics */
+      --panel-width: 680px;
+      --row-height: 40px;
     }
     * { box-sizing: border-box; }
-    body { margin: 0; background: var(--bg); color: var(--text);
-      font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
-    .app { display: grid; grid-template-columns: 220px 1fr; max-width: 900px; min-height: 100vh; margin: 0 auto; }
-    aside { padding: 24px 12px; border-right: 1px solid var(--line); }
-    main { padding: 24px 16px; min-width: 0; }
-    .lists { list-style: none; margin: 0; padding: 0; }
-    .lists li { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 8px; cursor: pointer; }
-    .lists li.current { background: var(--panel); font-weight: 600; }
-    .lists .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
-    .lists .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .lists .count { color: var(--muted); font-size: 13px; }
-    .lists .del { visibility: hidden; border: 0; background: none; color: var(--muted); cursor: pointer; }
-    .lists li:hover .del { visibility: visible; }
-    form.new-list input { width: 100%; margin-top: 8px; }
-    h1 { margin: 0 0 16px; font-size: 26px; }
-    header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
-    header h1 { flex: 1; margin: 0; }
-    .seg { display: inline-flex; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-    .seg button, .btn { border: 0; background: none; color: var(--text); padding: 5px 10px; cursor: pointer; font: inherit; font-size: 13px; }
-    .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
-    .btn:disabled { color: var(--muted); cursor: default; }
-    input[type=text] { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line);
-      border-radius: 8px; padding: 8px 10px; outline: none; }
-    input[type=text]:focus { border-color: var(--accent); }
-    .capture { position: relative; margin-bottom: 12px; }
-    .capture input { width: 100%; padding-right: 110px; }
-    .chip { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 12px;
-      background: var(--accent); color: #fff; padding: 2px 8px; border-radius: 10px; }
-    .tasks { list-style: none; margin: 0; padding: 0; background: var(--panel); border-radius: 10px; overflow: hidden; }
-    .tasks li { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
-    .tasks li:last-child { border-bottom: 0; }
-    .tasks li.done .title { color: var(--muted); text-decoration: line-through; }
-    .tasks .title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-    .tasks .title input { width: 100%; }
-    .tasks .due { font-size: 12px; color: var(--muted); }
-    .tasks .due.Today { color: var(--today); }
-    .tasks .due.Overdue { color: var(--overdue); }
-    .tasks .del { visibility: hidden; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 16px; }
-    .tasks li:hover .del { visibility: visible; }
-    .empty { color: var(--muted); text-align: center; padding: 32px; }
-    footer { color: var(--muted); font-size: 13px; margin-top: 12px; }
-    @media (max-width: 640px) {
-      .app { grid-template-columns: 1fr; }
-      aside { border-right: 0; border-bottom: 1px solid var(--line); padding: 16px; }
-      .tasks .del, .lists .del { visibility: visible; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; color: var(--text); overflow-x: hidden;
+      font: 13px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", Roboto, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      background:
+        radial-gradient(ellipse 60% 50% at 15% 20%, #ff7a59 0%, transparent 70%),
+        radial-gradient(ellipse 55% 60% at 85% 25%, #c04fd8 0%, transparent 70%),
+        radial-gradient(ellipse 70% 60% at 30% 95%, #2f6bff 0%, transparent 70%),
+        radial-gradient(ellipse 50% 50% at 90% 90%, #ffb347 0%, transparent 70%),
+        linear-gradient(160deg, #3b2a7a, #1a2a6c 60%, #0f1a3d);
+      background-attachment: fixed;
+    }
+
+    /* SpotlightPanel: top edge pinned to the top-third line, grows downward. */
+    .desktop { min-height: 100%; padding: 34vh 16px 48px; }
+    .panel {
+      width: var(--panel-width); max-width: 100%; margin: 0 auto;
+      border-radius: 14px; overflow: hidden;
+      background: rgba(40, 40, 44, 0.62);
+      -webkit-backdrop-filter: blur(40px) saturate(180%);
+      backdrop-filter: blur(40px) saturate(180%);
+      box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.18) inset, 0 0 0 0.5px rgba(0, 0, 0, 0.6),
+        0 24px 60px rgba(0, 0, 0, 0.45);
+    }
+    .divider { height: 1px; background: var(--divider); }
+
+    .capture { display: flex; align-items: center; gap: 8px; padding: 16px 20px; }
+    .capture input {
+      flex: 1; min-width: 0; border: 0; outline: none; background: none; padding: 0;
+      color: var(--text); font-family: inherit; font-size: 22px; line-height: 36px;
+    }
+    .capture input::placeholder { color: rgba(235, 235, 245, 0.3); }
+
+    .chip {
+      display: inline-flex; align-items: center; gap: 4px; flex: none;
+      padding: 4px 8px; border-radius: 999px; font-size: 11px; white-space: nowrap;
+      color: var(--tint); background: color-mix(in srgb, var(--tint) 20%, transparent);
+    }
+    .chip svg { width: 12px; height: 12px; }
+    button.chip { border: 0; font-family: inherit; cursor: pointer; }
+
+    .pills { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 20px; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 5px 10px; border-radius: 999px; cursor: pointer;
+      font-family: inherit; font-size: 12px; font-weight: 500; line-height: 1.2;
+      color: var(--c); background: none; box-shadow: 0 0 0 1px var(--c) inset; border: 0;
+    }
+    .pill .key { font-size: 10px; opacity: 0.7; font-family: ui-rounded, -apple-system, system-ui, sans-serif; }
+    .pill.selected { background: var(--c); color: var(--on); box-shadow: none; }
+
+    .rows { overflow-y: auto; transition: height 0.2s ease-out; }
+    .row {
+      position: relative; display: flex; align-items: center; gap: 10px;
+      height: var(--row-height); padding: 0 20px; font-size: 13px; outline: none;
+      transition: opacity 0.2s ease-out; cursor: default;
+    }
+    .row.focused { background: color-mix(in srgb, var(--accent) 25%, transparent); }
+    .row.focused::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--accent); }
+    .row.completed { opacity: 0.55; }
+    .row.completed .title { color: var(--secondary); text-decoration: line-through; }
+    .row .check { display: flex; flex: none; padding: 0; border: 0; background: none; color: var(--accent); cursor: pointer; }
+    .row.completed .check { color: var(--secondary); }
+    .row .check svg { width: 16px; height: 16px; }
+    .row .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .row input {
+      flex: 1; min-width: 0; border: 0; outline: none; background: none; padding: 0;
+      color: var(--text); font: inherit;
     }
   </style>
 </head>
 <body>
-  <div class="app">
-    <aside>
-      <ul class="lists" id="lists"></ul>
-      <form class="new-list" id="new-list"><input type="text" placeholder="New list" aria-label="New list"></form>
-    </aside>
-    <main>
-      <header>
-        <h1 id="list-name"></h1>
-        <div class="seg" id="views">
-          <button data-view="All">All</button><button data-view="Active">Active</button><button data-view="Completed">Done</button>
-        </div>
-        <button class="btn" id="undo" title="Undo (⌘Z)">Undo</button>
-        <button class="btn" id="redo" title="Redo (⇧⌘Z)">Redo</button>
-      </header>
-      <form class="capture" id="capture">
-        <input type="text" placeholder="Add a task — try “call mum tomorrow”" aria-label="New task" autofocus>
-        <span class="chip" id="chip" hidden></span>
-      </form>
-      <ul class="tasks" id="tasks"></ul>
-      <footer id="footer"></footer>
-    </main>
+  <div class="desktop">
+    <div class="panel">
+      <div class="capture">
+        <input id="input" type="text" placeholder="Add a task…" aria-label="Add a task" autocomplete="off" spellcheck="false">
+        <span id="badge"></span>
+      </div>
+      <div class="divider"></div>
+      <div class="pills" id="pills"></div>
+      <div class="divider" id="rows-divider" hidden></div>
+      <div class="rows" id="rows"></div>
+    </div>
   </div>
   <script type="module" src="app.js"></script>
 </body>
