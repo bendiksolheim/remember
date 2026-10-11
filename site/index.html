@@ -3,11 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Remember</title>
+  <title>Remember — always one keystroke away</title>
+  <meta name="description" content="A simple, keyboard-first todo app for your Mac. Always one keystroke away.">
+  <link rel="icon" href="icon.png">
   <style>
-    /* A copy of the macOS capture panel (swift/Sources/RememberMac/CaptureView.swift
+    /* The demo is a copy of the macOS capture panel (swift/Sources/RememberMac/CaptureView.swift
        and SpotlightPanel.swift). That panel always renders dark on a .hudWindow
-       material, whatever the system appearance, so this page does too. */
+       material, whatever the system appearance, so this page does too: the
+       whole page is the "desktop" the panel floats on. */
     :root {
       color-scheme: dark;
       --text: #fff;
@@ -38,16 +41,70 @@
       background-attachment: fixed;
     }
 
-    /* SpotlightPanel: top edge pinned to the top-third line, grows downward. */
-    .desktop { min-height: 100%; padding: 34vh 16px 48px; }
-    .panel {
-      width: var(--panel-width); max-width: 100%; margin: 0 auto;
-      border-radius: 14px; overflow: hidden;
+    a { color: inherit; }
+    kbd {
+      display: inline-block; min-width: 1.6em; padding: 0.1em 0.45em; border-radius: 6px;
+      font: 500 0.85em/1.4 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; text-align: center;
+      background: rgba(255, 255, 255, 0.14); box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.25) inset, 0 1px 0 rgba(0, 0, 0, 0.35);
+    }
+    .glass {
       background: rgba(40, 40, 44, 0.62);
       -webkit-backdrop-filter: blur(40px) saturate(180%);
       backdrop-filter: blur(40px) saturate(180%);
       box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.18) inset, 0 0 0 0.5px rgba(0, 0, 0, 0.6),
         0 24px 60px rgba(0, 0, 0, 0.45);
+    }
+
+    /* --- Page ---------------------------------------------------------------- */
+
+    .page { max-width: 960px; margin: 0 auto; padding: 0 16px; }
+
+    .hero { padding: 11vh 0 36px; text-align: center; }
+    .icon { width: 72px; height: 72px; border-radius: 22.5%; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35); }
+    h1 {
+      margin: 20px 0 14px; font-size: clamp(34px, 6vw, 56px); line-height: 1.05;
+      font-weight: 700; letter-spacing: -0.025em;
+    }
+    .lede { max-width: 34em; margin: 0 auto; font-size: 18px; line-height: 1.5; color: rgba(255, 255, 255, 0.82); }
+    .lede kbd { font-size: 15px; }
+
+    /* Room for the panel at its tallest (MAX_VISIBLE_ROWS rows), so the page
+       below doesn't jump as the list grows and shrinks. */
+    .stage { min-height: 450px; }
+    .stage-label { margin: 0 0 10px; text-align: center; font-size: 12px; color: var(--secondary); }
+
+    .cta { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 8px 0 12vh; text-align: center; }
+    .button {
+      display: inline-block; padding: 12px 26px; border-radius: 999px; text-decoration: none;
+      font-size: 16px; font-weight: 600; color: #fff; background: var(--accent);
+      box-shadow: 0 8px 24px rgba(10, 132, 255, 0.35);
+    }
+    .button:hover { background: #3396ff; }
+    .meta { font-size: 12px; color: var(--secondary); }
+    .cta .alt { font-size: 13px; color: rgba(255, 255, 255, 0.82); }
+
+    .values { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+    .value { padding: 24px; border-radius: 14px; }
+    h2 { margin: 0 0 10px; font-size: 20px; letter-spacing: -0.01em; }
+    .value p, .install p { margin: 0 0 10px; font-size: 14px; line-height: 1.55; color: rgba(255, 255, 255, 0.82); }
+    .value p:last-child { margin-bottom: 0; }
+    .keys { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 14px 0 0; font-size: 13px; }
+    .keys dt { text-align: right; white-space: nowrap; }
+    .keys dd { margin: 0; color: var(--secondary); }
+
+    .install { max-width: 560px; margin: 12vh auto 0; padding: 24px; border-radius: 14px; scroll-margin-top: 24px; }
+    .install pre {
+      margin: 0 0 12px; padding: 14px 16px; border-radius: 10px; overflow-x: auto;
+      background: rgba(0, 0, 0, 0.35); font: 13px/1.6 ui-monospace, "SF Mono", Menlo, monospace;
+    }
+
+    footer { padding: 48px 0; text-align: center; font-size: 12px; color: var(--secondary); }
+
+    /* --- The capture panel -------------------------------------------------- */
+
+    .panel {
+      width: var(--panel-width); max-width: 100%; margin: 0 auto;
+      border-radius: 14px; overflow: hidden;
     }
     .divider { height: 1px; background: var(--divider); }
 
@@ -97,18 +154,86 @@
   </style>
 </head>
 <body>
-  <div class="desktop">
-    <div class="panel">
-      <div class="capture">
-        <input id="input" type="text" placeholder="Add a task…" aria-label="Add a task" autocomplete="off" spellcheck="false">
-        <span id="badge"></span>
+  <div class="page">
+    <header class="hero">
+      <img class="icon" src="icon.png" alt="">
+      <h1>Always one keystroke away.</h1>
+      <p class="lede">
+        Remember is a simple todo app for your Mac. Press <kbd>⌥</kbd> <kbd>⌘</kbd> <kbd>Space</kbd>
+        from anywhere, type the task, hit Return, and you're back to what you were doing.
+      </p>
+    </header>
+
+    <div class="stage">
+      <p class="stage-label">This is the real thing, running in your browser. Start typing.</p>
+      <div class="panel glass">
+        <div class="capture">
+          <input id="input" type="text" placeholder="Add a task…" aria-label="Add a task" autocomplete="off" spellcheck="false">
+          <span id="badge"></span>
+        </div>
+        <div class="divider"></div>
+        <div class="pills" id="pills"></div>
+        <div class="divider" id="rows-divider" hidden></div>
+        <div class="rows" id="rows"></div>
       </div>
-      <div class="divider"></div>
-      <div class="pills" id="pills"></div>
-      <div class="divider" id="rows-divider" hidden></div>
-      <div class="rows" id="rows"></div>
     </div>
+
+    <div class="cta">
+      <a class="button" id="download" href="https://github.com/bendiksolheim/remember/releases/latest">Download for Mac</a>
+      <span class="meta" id="download-meta">macOS 14 or later · Apple Silicon</span>
+      <a class="alt" href="#install">Or install with Homebrew</a>
+    </div>
+
+    <main class="values">
+      <section class="value glass">
+        <h2>Always there</h2>
+        <p>
+          Remember never sits more than one keystroke away, and it's ready for a new task the moment it
+          appears. No loading, no window to find, no thinking about where things go.
+        </p>
+        <p>
+          Your tasks live on your Mac and work offline. Sync between your devices is there if you want it.
+        </p>
+      </section>
+      <section class="value glass">
+        <h2>Only what fits</h2>
+        <p>
+          Lists, tasks, and due dates when you need them. That's most of it, and that's on purpose.
+        </p>
+        <p>
+          A feature only gets in if it fits with everything else and has a real role in the app. You get
+          fewer features, and each one is well thought out.
+        </p>
+      </section>
+      <section class="value glass">
+        <h2>Clear, and all keyboard</h2>
+        <p>The interface is easy to understand at a glance, and you can do everything from the keyboard.</p>
+        <dl class="keys">
+          <dt><kbd>⌥</kbd> <kbd>⌘</kbd> <kbd>Space</kbd></dt><dd>Open Remember</dd>
+          <dt><kbd>↓</kbd> <kbd>↑</kbd></dt><dd>Move between tasks</dd>
+          <dt><kbd>Space</kbd></dt><dd>Complete a task</dd>
+          <dt><kbd>E</kbd></dt><dd>Rename it</dd>
+          <dt><kbd>⌘</kbd> <kbd>1</kbd>–<kbd>9</kbd></dt><dd>Switch list</dd>
+          <dt><kbd>⌘</kbd> <kbd>Z</kbd></dt><dd>Undo anything</dd>
+        </dl>
+      </section>
+    </main>
+
+    <section class="install glass" id="install">
+      <h2>Install with Homebrew</h2>
+      <pre><code>brew tap bendiksolheim/tap https://github.com/bendiksolheim/remember
+brew install --cask remember</code></pre>
+      <p>
+        Update with <code>brew update &amp;&amp; brew upgrade --cask remember</code>. More details, and the
+        source code, are <a href="https://github.com/bendiksolheim/remember#installation">on GitHub</a>.
+      </p>
+    </section>
+
+    <footer>
+      <a href="https://github.com/bendiksolheim/remember">Remember on GitHub</a>
+    </footer>
   </div>
+  <script type="module" src="page.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

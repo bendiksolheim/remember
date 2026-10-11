@@ -240,9 +240,6 @@ function render() {
     focus = { type: "input" };
   }
 
-  const current = s.lists.find((l) => l.id === s.current_list);
-  document.title = current ? `${current.name} — Remember` : "Remember";
-
   $("badge").replaceChildren();
   if (detection && !dueDismissed) {
     const badge = unfocusable(chip(detection.label, "var(--accent)", "button"));
@@ -415,7 +412,9 @@ document.addEventListener("keydown", (e) => {
     return;
   }
 
-  if (!NO_MODIFIERS(e) || editing) return;
+  // Once the visitor clicks away from the panel, plain keys belong to the
+  // page again (arrows and Space scroll it).
+  if (!NO_MODIFIERS(e) || editing || focus.type === "none") return;
   if (e.code === "ArrowDown" || e.code === "ArrowUp") {
     e.preventDefault();
     moveFocus(e.code === "ArrowDown" ? 1 : -1);

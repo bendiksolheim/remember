@@ -1,11 +1,11 @@
 # Remember
 
-Reminder is a local-first todo app, with optional sync between your devices. Create lists, add
+Remember is a local-first todo app, with optional sync between your devices. Create lists, add
 tasks and set due dates when you need them. All of it just one keystroke away, always.
 
 Simplicity and availability are top priorities. We value well thought out features that fits
 well with other functionality and can play a central role in the application. Remember should
-never be more than one keystroke away, and be ready to accept new tasks immedeately.
+never be more than one keystroke away, and be ready to accept new tasks immediately.
 
 The interface is clear and easy to understand. Everything can be navigated by keyboard.
 
