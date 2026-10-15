@@ -788,6 +788,10 @@ private struct ListPillRow: SwiftUI.View {
                 }
             }
             .foregroundStyle(foreground)
+            // `.plain` buttons only hit-test opaque pixels, and a resting
+            // pill's fill is `Color.clear` -- without this only the text and
+            // the 1pt outline were clickable, not the capsule between them.
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         // Click/⌘-shortcut only, like the old Menu-based switcher -- not
