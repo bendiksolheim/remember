@@ -1,6 +1,5 @@
 ---
 source: crates/core/tests/snapshots.rs
-assertion_line: 164
 expression: "doc.read(ViewFilter::All, \"default\", &clock)"
 ---
 rows:
@@ -13,6 +12,10 @@ rows:
     due_state: Later
     list_id: default
     list_name: Tasks
+    parent_id: ~
+    step_count: 0
+    steps_done: 0
+    context_only: false
   - id: "4"
     title: Clean garage
     notes: ""
@@ -22,6 +25,10 @@ rows:
     due_state: None
     list_id: default
     list_name: Tasks
+    parent_id: ~
+    step_count: 0
+    steps_done: 0
+    context_only: false
   - id: "3"
     title: Pay rent
     notes: ""
@@ -31,6 +38,10 @@ rows:
     due_state: Overdue
     list_id: default
     list_name: Tasks
+    parent_id: ~
+    step_count: 0
+    steps_done: 0
+    context_only: false
   - id: "2"
     title: Call dentist
     notes: ""
@@ -40,6 +51,10 @@ rows:
     due_state: Later
     list_id: default
     list_name: Tasks
+    parent_id: ~
+    step_count: 0
+    steps_done: 0
+    context_only: false
   - id: "1"
     title: Write report
     notes: ""
@@ -49,6 +64,10 @@ rows:
     due_state: Today
     list_id: default
     list_name: Tasks
+    parent_id: ~
+    step_count: 0
+    steps_done: 0
+    context_only: false
   - id: "0"
     title: Buy milk
     notes: ""
@@ -58,6 +77,10 @@ rows:
     due_state: None
     list_id: default
     list_name: Tasks
+    parent_id: ~
+    step_count: 0
+    steps_done: 0
+    context_only: false
 view: All
 current_list: default
 lists:

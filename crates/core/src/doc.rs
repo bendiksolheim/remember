@@ -1,12 +1,15 @@
 //! The only module that may mention Loro. Document layout:
 //!
 //! - `tasks` — a `LoroMap` keyed by task UUID, each value a nested `LoroMap`
-//!   with `title`, `notes`, `done`, `due`, `created_at`, `list_id`.
+//!   with `title`, `notes`, `done`, `due`, `created_at`, `list_id`, and
+//!   optionally `parent_id`, the task this one is a step of (see [`Tree`]).
 //! - `order` — a `LoroMovableList` of task UUID strings, shared across every
 //!   list. Filtering by list just skips non-matching ids in `read()` — the
 //!   same trick already used for the Active/Completed filter — so moving a
 //!   task within one list reuses `Move` unchanged even though other lists'
-//!   tasks are interleaved in the same underlying sequence.
+//!   tasks are interleaved in the same underlying sequence. A step's
+//!   position only matters among its siblings: `read()` always shows steps
+//!   right after their task, so they follow it without being moved.
 //! - `lists` — a flat `LoroMap` keyed by list UUID, each value its plain
 //!   name string (no nested map needed for a single field).
 //! - `list_order` — a `LoroMovableList` of list UUID strings, for sidebar
@@ -233,6 +236,120 @@ fn task_list_id(tasks: &LoroMap, id: &str) -> String {
         .unwrap_or_else(|| DEFAULT_LIST_ID.to_string())
 }
 
+/// One well-formed task as stored.
+struct Entry {
+    id: String,
+    /// Index in `order_ids(order)`.
+    pos: usize,
+    title: String,
+    notes: String,
+    done: bool,
+    due: Option<i64>,
+    list_id: String,
+    /// As stored; see [`Tree::new`] for when it counts.
+    parent_id: Option<String>,
+}
+
+/// Every well-formed task with its steps placed. `read()` and every
+/// step-aware command work from this, so they agree on what is a step of
+/// what. Indices are into `entries`.
+struct Tree {
+    /// In `order`.
+    entries: Vec<Entry>,
+    index: HashMap<String, usize>,
+    top_level: Vec<usize>,
+    /// Per entry, its steps in `order` (always empty for a step).
+    steps: Vec<Vec<usize>>,
+    /// Per entry, the task it is a step of.
+    parent: Vec<Option<usize>>,
+}
+
+impl Tree {
+    /// A stored `parent_id` only counts if it names another task in the
+    /// same list with no stored `parent_id` of its own. Checking the stored
+    /// field keeps steps one level deep without cycle detection: a merged
+    /// "A under B" and "B under A" both read as top-level.
+    fn new(tasks: &LoroMap, order: &LoroMovableList) -> Self {
+        let mut entries = Vec::new();
+        for (pos, id) in order_ids(order).into_iter().enumerate() {
+            let Some(entry) = tasks.get(&id) else {
+                continue; // defensive: order references a task `tasks` doesn't have
+            };
+            let LoroValue::Map(fields) = entry.get_deep_value() else {
+                continue; // defensive: entry isn't the expected nested map
+            };
+            let Some(title) = fields.get("title").and_then(as_string) else {
+                continue;
+            };
+            entries.push(Entry {
+                id,
+                pos,
+                title,
+                notes: fields.get("notes").and_then(as_string).unwrap_or_default(),
+                done: fields.get("done").and_then(as_bool).unwrap_or(false),
+                due: fields.get("due").and_then(as_i64),
+                list_id: fields
+                    .get("list_id")
+                    .and_then(as_string)
+                    .unwrap_or_else(|| DEFAULT_LIST_ID.to_string()),
+                parent_id: fields.get("parent_id").and_then(as_string),
+            });
+        }
+
+        let mut index = HashMap::new();
+        for (i, entry) in entries.iter().enumerate() {
+            index.entry(entry.id.clone()).or_insert(i);
+        }
+        let parent: Vec<Option<usize>> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| {
+                let p = *index.get(entry.parent_id.as_deref()?)?;
+                let candidate = &entries[p];
+                (p != i && candidate.parent_id.is_none() && candidate.list_id == entry.list_id)
+                    .then_some(p)
+            })
+            .collect();
+        let mut top_level = Vec::new();
+        let mut steps = vec![Vec::new(); entries.len()];
+        for (i, p) in parent.iter().enumerate() {
+            match p {
+                Some(p) => steps[*p].push(i),
+                None => top_level.push(i),
+            }
+        }
+        Tree {
+            entries,
+            index,
+            top_level,
+            steps,
+            parent,
+        }
+    }
+
+    fn find(&self, id: &str) -> Option<usize> {
+        self.index.get(id).copied()
+    }
+
+    fn id(&self, i: usize) -> &str {
+        &self.entries[i].id
+    }
+
+    /// The entry a new last step of `task` goes after.
+    fn last_in_block(&self, task: usize) -> usize {
+        self.steps[task].last().copied().unwrap_or(task)
+    }
+}
+
+/// Moves a step to just before `first`, its first sibling. `None` when it
+/// is already first.
+fn resolve_move_first(ids: &[String], id: &str, first: Option<&str>) -> Option<(usize, usize)> {
+    let first = first?;
+    let from = ids.iter().position(|x| x == id)?;
+    let to = ids.iter().position(|x| x == first)?;
+    (to < from).then_some((from, to))
+}
+
 /// Resolves where `id` should land relative to `after` within `ids` (both
 /// drawn from the same movable list), shared by every "reorder relative to
 /// a sibling" command (`Move`, `MoveList`). Returns `None` when the
@@ -394,10 +511,20 @@ impl Doc {
                 after,
                 due,
                 list_id,
-            } => self.apply_add(title, after, due, list_id, clock, ids),
+                parent_id,
+            } => match parent_id {
+                Some(parent_id) => self.apply_add_step(title, due, &parent_id, clock, ids),
+                None => self.apply_add(title, after, due, list_id, clock, ids),
+            },
             Command::SetTitle { id, title } => self.apply_set_title(&id, title),
             Command::SetNotes { id, notes } => self.set_field(&id, "notes", notes.into()),
-            Command::SetDone { id, done } => self.set_field(&id, "done", done.into()),
+            Command::SetDone { id, done } => self.apply_set_done(&id, done),
+            Command::SetParent { id, parent_id } => self.apply_set_parent(&id, parent_id),
+            Command::Indent { .. } | Command::Outdent { .. } | Command::Shift { .. } => {
+                Err(CoreError::Document(
+                    "Indent, Outdent and Shift are resolved by Session, not Doc".to_string(),
+                ))
+            }
             Command::SetDue { id, due } => self.apply_set_due(&id, due),
             Command::Move { id, after } => self.apply_move(&id, after),
             Command::Delete { id } => self.apply_delete(&id),
@@ -454,53 +581,76 @@ impl Doc {
                 })
                 .collect();
 
-        let mut rows = Vec::new();
+        let tree = Tree::new(&tasks, &order);
         let mut active_count = 0u32;
         let mut task_counts: HashMap<String, u32> = HashMap::new();
-        for id in order_ids(&order) {
-            let Some(entry) = tasks.get(&id) else {
-                continue; // defensive: order references a task `tasks` doesn't have
-            };
-            let LoroValue::Map(fields) = entry.get_deep_value() else {
-                continue; // defensive: entry isn't the expected nested map
-            };
-            let Some(title) = fields.get("title").and_then(as_string) else {
-                continue;
-            };
-            let notes = fields.get("notes").and_then(as_string).unwrap_or_default();
-            let done = fields.get("done").and_then(as_bool).unwrap_or(false);
-            let due = fields.get("due").and_then(as_i64);
-            let list_id = fields
-                .get("list_id")
-                .and_then(as_string)
-                .unwrap_or_else(|| DEFAULT_LIST_ID.to_string());
+        let list_name = lists_map
+            .get(list)
+            .and_then(|v| as_string(&v.get_deep_value()))
+            .unwrap_or_default();
+        let row = |entry: &Entry, done: bool, display_due: Option<i64>| TaskRow {
+            id: entry.id.clone(),
+            title: entry.title.clone(),
+            notes: entry.notes.clone(),
+            done,
+            due: entry.due,
+            due_label: display_due.map(|d| due_label(d, now, self.local_offset_seconds)),
+            due_state: display_due
+                .map(|d| due_state(d, now, self.local_offset_seconds))
+                .unwrap_or(DueState::None),
+            list_id: entry.list_id.clone(),
+            list_name: list_name.clone(),
+            parent_id: None,
+            step_count: 0,
+            steps_done: 0,
+            context_only: false,
+        };
 
-            if !done {
-                active_count += 1;
+        let mut rows = Vec::new();
+        for &t in &tree.top_level {
+            let task = &tree.entries[t];
+            let its_steps: Vec<&Entry> = tree.steps[t].iter().map(|&s| &tree.entries[s]).collect();
+            let open_steps = its_steps.iter().filter(|s| !s.done);
+            let steps_done = its_steps.len() - open_steps.clone().count();
+            // A merge can put an open step under a done task; it must stay
+            // visible, so the task reads as open.
+            let done = task.done && steps_done == its_steps.len();
+
+            for entry in std::iter::once(task).chain(its_steps.iter().copied()) {
+                *task_counts.entry(entry.list_id.clone()).or_default() += 1;
             }
-            *task_counts.entry(list_id.clone()).or_default() += 1;
-            if !matches_filter(done, view) || list_id != list {
+            active_count += u32::from(!done) + (its_steps.len() - steps_done) as u32;
+            if task.list_id != list {
                 continue;
             }
 
-            let list_name = lists_map
-                .get(&list_id)
-                .and_then(|v| as_string(&v.get_deep_value()))
-                .unwrap_or_default();
+            let shown_steps: Vec<&Entry> = its_steps
+                .iter()
+                .copied()
+                .filter(|s| matches_filter(s.done, view))
+                .collect();
+            let matches = matches_filter(done, view);
+            if !matches && shown_steps.is_empty() {
+                continue;
+            }
 
+            let next_due = task
+                .due
+                .into_iter()
+                .chain(open_steps.filter_map(|s| s.due))
+                .min();
             rows.push(TaskRow {
-                id,
-                title,
-                notes,
-                done,
-                due,
-                due_label: due.map(|d| due_label(d, now, self.local_offset_seconds)),
-                due_state: due
-                    .map(|d| due_state(d, now, self.local_offset_seconds))
-                    .unwrap_or(DueState::None),
-                list_id,
-                list_name,
+                step_count: its_steps.len() as u32,
+                steps_done: steps_done as u32,
+                context_only: !matches,
+                ..row(task, done, next_due)
             });
+            for step in shown_steps {
+                rows.push(TaskRow {
+                    parent_id: Some(task.id.clone()),
+                    ..row(step, step.done, step.due)
+                });
+            }
         }
 
         for list_row in &mut list_rows {
@@ -603,12 +753,61 @@ impl Doc {
             return Err(CoreError::NotFound(list_id));
         }
 
+        if self.insert_task(&title, due, &list_id, None, pos, clock, ids)? {
+            self.doc.commit();
+            self.revision += 1;
+        }
+        Ok(())
+    }
+
+    /// `Add` with a `parent_id`. A done task getting an open step reopens,
+    /// as in `apply_set_done`.
+    fn apply_add_step(
+        &mut self,
+        title: String,
+        due: Option<i64>,
+        parent_id: &str,
+        clock: &dyn Clock,
+        ids: &dyn IdSource,
+    ) -> Result<(), CoreError> {
+        let tree = self.tree();
+        let p = tree
+            .find(parent_id)
+            .ok_or_else(|| CoreError::NotFound(parent_id.to_string()))?;
+        let task = tree.parent[p].unwrap_or(p);
+        let pos = tree.entries[tree.last_in_block(task)].pos + 1;
+        let (task_id, list_id) = (tree.id(task), &tree.entries[task].list_id);
+        let created = self.insert_task(&title, due, list_id, Some(task_id), pos, clock, ids)?;
+        if !created {
+            return Ok(());
+        }
+        if tree.entries[task].done {
+            self.existing_task_map(task_id)?
+                .insert("done", false)
+                .map_err(doc_err)?;
+        }
+        self.doc.commit();
+        self.revision += 1;
+        Ok(())
+    }
+
+    /// Creates a task at `pos` without committing, so the caller's other
+    /// writes share its undo step. `false`, doing nothing, for an empty
+    /// title (as in apply_set_title).
+    #[allow(clippy::too_many_arguments)]
+    fn insert_task(
+        &mut self,
+        title: &str,
+        due: Option<i64>,
+        list_id: &str,
+        parent_id: Option<&str>,
+        pos: usize,
+        clock: &dyn Clock,
+        ids: &dyn IdSource,
+    ) -> Result<bool, CoreError> {
         let trimmed = title.trim();
         if trimmed.is_empty() {
-            // Mirrors apply_set_title: an empty title is a full no-op here,
-            // not a task with a blank name — nothing is created, `revision`
-            // doesn't move.
-            return Ok(());
+            return Ok(false);
         }
 
         let id = ids.new_id();
@@ -620,19 +819,62 @@ impl Doc {
         task.insert("due", due_to_loro_value(due))
             .map_err(doc_err)?;
         task.insert("created_at", clock.now()).map_err(doc_err)?;
-        task.insert("list_id", list_id.as_str()).map_err(doc_err)?;
+        task.insert("list_id", list_id).map_err(doc_err)?;
+        if let Some(parent_id) = parent_id {
+            task.insert("parent_id", parent_id).map_err(doc_err)?;
+        }
 
-        order.insert(pos, id).map_err(doc_err)?;
-
-        self.doc.commit();
-        self.revision += 1;
-        Ok(())
+        self.doc
+            .get_movable_list("order")
+            .insert(pos, id)
+            .map_err(doc_err)?;
+        Ok(true)
     }
 
+    fn tree(&self) -> Tree {
+        Tree::new(
+            &self.doc.get_map("tasks"),
+            &self.doc.get_movable_list("order"),
+        )
+    }
+
+    /// A step only moves among its siblings: `after` is one of them, or
+    /// `None`/its task for "first". For a top-level task, an `after` naming
+    /// a step means after that step's task (e.g. an iOS drop mid-block).
     fn apply_move(&mut self, id: &str, after: Option<String>) -> Result<(), CoreError> {
         let order = self.doc.get_movable_list("order");
         let ids = order_ids(&order);
-        let Some((from, to)) = resolve_move(&ids, id, after.as_deref())? else {
+        let tree = self.tree();
+        let step_of = tree.find(id).and_then(|i| tree.parent[i]);
+        let resolved = match step_of {
+            Some(task) => {
+                let siblings: Vec<&str> = tree.steps[task]
+                    .iter()
+                    .map(|&s| tree.id(s))
+                    .filter(|&s| s != id)
+                    .collect();
+                match after.as_deref() {
+                    Some(a) if siblings.contains(&a) => resolve_move(&ids, id, Some(a))?,
+                    None => resolve_move_first(&ids, id, siblings.first().copied()),
+                    Some(a) if a == tree.id(task) => {
+                        resolve_move_first(&ids, id, siblings.first().copied())
+                    }
+                    Some(_) => {
+                        return Err(CoreError::Document(
+                            "a step can only move among its task's steps".to_string(),
+                        ))
+                    }
+                }
+            }
+            None => {
+                let after = after.map(|a| match tree.find(&a).and_then(|j| tree.parent[j]) {
+                    Some(task) => tree.id(task).to_string(),
+                    None => a,
+                });
+                resolve_move(&ids, id, after.as_deref())?
+            }
+        };
+        let Some((from, to)) = resolved else {
             // Genuinely a no-op (e.g. already first, or already right after
             // the given id) — see the comment in `set_field` for why this
             // must not commit or bump `revision`.
@@ -644,17 +886,125 @@ impl Doc {
         Ok(())
     }
 
+    /// Deleting a task deletes its steps with it.
     fn apply_delete(&mut self, id: &str) -> Result<(), CoreError> {
         let order = self.doc.get_movable_list("order");
         let ids = order_ids(&order);
-        let idx = ids
+        if !ids.iter().any(|x| x == id) {
+            return Err(CoreError::NotFound(id.to_string()));
+        }
+        let tree = self.tree();
+        let mut doomed = vec![id];
+        if let Some(i) = tree.find(id) {
+            doomed.extend(tree.steps[i].iter().map(|&s| tree.id(s)));
+        }
+
+        // Descending indices so deleting one doesn't shift the rest still
+        // to be processed.
+        let mut indices: Vec<usize> = doomed
             .iter()
-            .position(|x| x == id)
+            .filter_map(|d| ids.iter().position(|x| x == d))
+            .collect();
+        indices.sort_unstable();
+        for idx in indices.into_iter().rev() {
+            order.delete(idx, 1).map_err(doc_err)?;
+        }
+        let tasks = self.doc.get_map("tasks");
+        for task_id in doomed {
+            tasks.delete(task_id).map_err(doc_err)?;
+        }
+
+        self.doc.commit();
+        self.revision += 1;
+        Ok(())
+    }
+
+    /// Completing a task completes its steps; reopening a step reopens its
+    /// task. Unchanged fields aren't written, so a no-op commits nothing.
+    fn apply_set_done(&mut self, id: &str, done: bool) -> Result<(), CoreError> {
+        let tree = self.tree();
+        let mut targets = vec![id];
+        if let Some(i) = tree.find(id) {
+            match (done, tree.parent[i]) {
+                (true, _) => targets.extend(tree.steps[i].iter().map(|&s| tree.id(s))),
+                (false, Some(task)) => targets.push(tree.id(task)),
+                (false, None) => {}
+            }
+        }
+        let value = LoroValue::from(done);
+        let mut changed = false;
+        for target in targets {
+            let task = self.existing_task_map(target)?;
+            if task.get("done").map(|v| v.get_deep_value()).as_ref() != Some(&value) {
+                task.insert("done", value.clone()).map_err(doc_err)?;
+                changed = true;
+            }
+        }
+        if changed {
+            self.doc.commit();
+            self.revision += 1;
+        }
+        Ok(())
+    }
+
+    /// See `Command::SetParent`. Outdenting places the task right after
+    /// its former task's own entry in `order`, i.e. below that whole block.
+    fn apply_set_parent(&mut self, id: &str, parent_id: Option<String>) -> Result<(), CoreError> {
+        let tree = self.tree();
+        let i = tree
+            .find(id)
             .ok_or_else(|| CoreError::NotFound(id.to_string()))?;
+        let order = self.doc.get_movable_list("order");
+        let ids = order_ids(&order);
+        let task = self.existing_task_map(id)?;
 
-        order.delete(idx, 1).map_err(doc_err)?;
-        self.doc.get_map("tasks").delete(id).map_err(doc_err)?;
+        let after = match parent_id {
+            Some(parent_id) => {
+                let p = tree
+                    .find(&parent_id)
+                    .ok_or_else(|| CoreError::NotFound(parent_id.clone()))?;
+                if tree.parent[i] == Some(p) {
+                    return Ok(());
+                }
+                if p == i
+                    || tree.parent[p].is_some()
+                    || tree.entries[p].list_id != tree.entries[i].list_id
+                    || !tree.steps[i].is_empty()
+                {
+                    return Err(CoreError::Document(format!(
+                        "{id} can't become a step of {parent_id}"
+                    )));
+                }
+                task.insert("parent_id", parent_id.as_str())
+                    .map_err(doc_err)?;
+                if !tree.entries[i].done && tree.entries[p].done {
+                    self.existing_task_map(&parent_id)?
+                        .insert("done", false)
+                        .map_err(doc_err)?;
+                }
+                let last = tree.steps[p]
+                    .iter()
+                    .copied()
+                    .rfind(|&s| s != i)
+                    .unwrap_or(p);
+                Some(tree.id(last))
+            }
+            None => {
+                if tree.entries[i].parent_id.is_none() {
+                    return Ok(());
+                }
+                // Also clears an ignored stored value, so it can't start
+                // counting later.
+                task.insert("parent_id", LoroValue::Null).map_err(doc_err)?;
+                tree.parent[i].map(|p| tree.id(p))
+            }
+        };
 
+        if let Some(after) = after {
+            if let Some((from, to)) = resolve_move(&ids, id, Some(after))? {
+                order.mov(from, to).map_err(doc_err)?;
+            }
+        }
         self.doc.commit();
         self.revision += 1;
         Ok(())
@@ -664,6 +1014,7 @@ impl Doc {
     /// 0. That trivially also puts it first *within* its new list once
     /// `read()` filters by list — no need to search for "the first task
     /// already in that list" — matching the "lands at the top" UX decision.
+    /// A task's steps go with it; a step moved on its own stops being one.
     fn apply_set_list(&mut self, id: &str, list_id: String) -> Result<(), CoreError> {
         let task = self.existing_task_map(id)?;
         if self.doc.get_map("lists").get(&list_id).is_none() {
@@ -675,7 +1026,21 @@ impl Doc {
             // Same reasoning as `set_field`'s same-value guard.
             return Ok(());
         }
+        // Before writing, while its steps still count as its steps.
+        let tree = self.tree();
         task.insert("list_id", list_id.as_str()).map_err(doc_err)?;
+
+        if let Some(i) = tree.find(id) {
+            // Even an ignored one: it could count in the new list.
+            if tree.entries[i].parent_id.is_some() {
+                task.insert("parent_id", LoroValue::Null).map_err(doc_err)?;
+            }
+            for &s in &tree.steps[i] {
+                self.existing_task_map(tree.id(s))?
+                    .insert("list_id", list_id.as_str())
+                    .map_err(doc_err)?;
+            }
+        }
 
         let order = self.doc.get_movable_list("order");
         if let Some(from) = order_ids(&order).iter().position(|x| x == id) {
@@ -935,6 +1300,7 @@ mod tests {
                 after: None,
                 due: None,
                 list_id: None,
+                parent_id: None,
             },
             &FixedClock(0),
             &ids,
@@ -1008,6 +1374,7 @@ mod tests {
                 after: None,
                 due: None,
                 list_id: Some(list_id.to_string()),
+                parent_id: None,
             },
             &FixedClock(0),
             ids,
@@ -1374,6 +1741,7 @@ mod tests {
                 after: None,
                 due: None,
                 list_id: None,
+                parent_id: None,
             },
             &FixedClock(0),
             &crate::clock::SeqIdSource::new(),
@@ -1397,6 +1765,7 @@ mod tests {
                 after: None,
                 due: None,
                 list_id: None,
+                parent_id: None,
             },
             &FixedClock(0),
             &crate::clock::SeqIdSource::new(),
@@ -1424,6 +1793,7 @@ mod tests {
                 after: None,
                 due: None,
                 list_id: None,
+                parent_id: None,
             },
             &FixedClock(0),
             &ids,
@@ -1438,6 +1808,7 @@ mod tests {
                 after: None,
                 due: None,
                 list_id: None,
+                parent_id: None,
             },
             &FixedClock(0),
             &ids,
@@ -1478,6 +1849,7 @@ mod tests {
                 after: None,
                 due: None,
                 list_id: None,
+                parent_id: None,
             },
             &FixedClock(0),
             &crate::clock::SeqIdSource::new(),
@@ -1518,6 +1890,7 @@ mod tests {
                 after: None,
                 due: Some(1_000),
                 list_id: None,
+                parent_id: None,
             },
             &FixedClock(0),
             &crate::clock::SeqIdSource::new(),
@@ -1538,6 +1911,7 @@ mod tests {
                 after: None,
                 due: None,
                 list_id: None,
+                parent_id: None,
             },
             &FixedClock(0),
             &crate::clock::SeqIdSource::new(),
@@ -1570,6 +1944,7 @@ mod tests {
                 after: None,
                 due: Some(0),
                 list_id: None,
+                parent_id: None,
             },
             &clock,
             &ids,
@@ -1587,5 +1962,618 @@ mod tests {
         let after = doc.read(ViewFilter::All, DEFAULT_LIST_ID, &clock);
         assert_eq!(after.rows[0].due_state, DueState::Overdue);
         assert_eq!(after.revision, revision_before);
+    }
+
+    // --- Steps -----------------------------------------------------------
+
+    /// A doc and its id source, with shorthands for the step tests below.
+    struct Fixture {
+        doc: Doc,
+        ids: crate::clock::SeqIdSource,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            Fixture {
+                doc: Doc::new(1).unwrap(),
+                ids: crate::clock::SeqIdSource::new(),
+            }
+        }
+
+        fn run(&mut self, cmd: Command) -> Result<(), CoreError> {
+            self.doc.apply(cmd, &FixedClock(0), &self.ids)
+        }
+
+        fn ok(&mut self, cmd: Command) {
+            self.run(cmd).unwrap();
+        }
+
+        fn work_list(&mut self) -> String {
+            add_work_list(&mut self.doc, &self.ids)
+        }
+
+        /// Adds a task at the top of the default list.
+        fn task(&mut self, title: &str) -> String {
+            add_task(&mut self.doc, &self.ids, title, DEFAULT_LIST_ID)
+        }
+
+        fn task_in(&mut self, title: &str, list: &str) -> String {
+            add_task(&mut self.doc, &self.ids, title, list)
+        }
+
+        fn step(&mut self, title: &str, parent: &str) -> String {
+            self.ok(add_step(title, parent));
+            let tree = self.doc.tree();
+            let newest = tree
+                .entries
+                .iter()
+                .max_by_key(|e| e.id.parse::<u64>().unwrap())
+                .unwrap();
+            assert_eq!(newest.title, title);
+            newest.id.clone()
+        }
+
+        fn raw(&self, id: &str, field: &str, value: impl Into<LoroValue>) {
+            set_raw_field(&self.doc, id, field, value);
+        }
+
+        fn view_in(&self, view: ViewFilter, list: &str) -> Vec<String> {
+            outline(&self.doc.read(view, list, &FixedClock(0)))
+        }
+
+        fn view(&self, view: ViewFilter) -> Vec<String> {
+            self.view_in(view, DEFAULT_LIST_ID)
+        }
+
+        fn outline(&self) -> Vec<String> {
+            self.view(ViewFilter::All)
+        }
+
+        fn rows(&self) -> Vec<TaskRow> {
+            self.doc
+                .read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0))
+                .rows
+        }
+
+        fn done(&self) -> Vec<bool> {
+            self.rows().iter().map(|r| r.done).collect()
+        }
+
+        fn revision(&self) -> u64 {
+            self.doc
+                .read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0))
+                .revision
+        }
+    }
+
+    /// Writes a task field straight into the document, bypassing commands —
+    /// to exercise `read()`'s repair rules and to build merge states.
+    fn set_raw_field(doc: &Doc, id: &str, field: &str, value: impl Into<LoroValue>) {
+        doc.existing_task_map(id)
+            .unwrap()
+            .insert(field, value.into())
+            .unwrap();
+        doc.doc.commit();
+    }
+
+    /// Titles in display order: steps indented, context rows in brackets,
+    /// and a task's progress after it.
+    fn outline(snap: &Snapshot) -> Vec<String> {
+        snap.rows
+            .iter()
+            .map(|r| {
+                let title = match (r.context_only, r.step_count) {
+                    (true, _) => format!("({})", r.title),
+                    (false, 0) => r.title.clone(),
+                    (false, n) => format!("{} {}/{n}", r.title, r.steps_done),
+                };
+                match r.parent_id {
+                    Some(_) => format!("  {title}"),
+                    None => title,
+                }
+            })
+            .collect()
+    }
+
+    fn add_step(title: &str, parent: &str) -> Command {
+        Command::Add {
+            title: title.to_string(),
+            after: None,
+            due: None,
+            list_id: None,
+            parent_id: Some(parent.to_string()),
+        }
+    }
+
+    fn done(id: &str, done: bool) -> Command {
+        let id = id.to_string();
+        Command::SetDone { id, done }
+    }
+
+    fn parent(id: &str, parent: Option<&str>) -> Command {
+        let (id, parent_id) = (id.to_string(), parent.map(str::to_string));
+        Command::SetParent { id, parent_id }
+    }
+
+    fn mv(id: &str, after: Option<&str>) -> Command {
+        let (id, after) = (id.to_string(), after.map(str::to_string));
+        Command::Move { id, after }
+    }
+
+    fn set_list(id: &str, list: &str) -> Command {
+        let (id, list_id) = (id.to_string(), list.to_string());
+        Command::SetList { id, list_id }
+    }
+
+    fn delete(id: &str) -> Command {
+        Command::Delete { id: id.to_string() }
+    }
+
+    fn not_found(result: Result<(), CoreError>) -> bool {
+        matches!(result, Err(CoreError::NotFound(_)))
+    }
+
+    fn rejected(result: Result<(), CoreError>) -> bool {
+        matches!(result, Err(CoreError::Document(_)))
+    }
+
+    #[test]
+    fn read_places_steps_directly_under_their_task() {
+        let mut t = Fixture::new();
+        let p = t.task("p");
+        let s1 = t.task("s1");
+        t.task("x");
+        let s2 = t.task("s2");
+        // `order` is now s2, x, s1, p: both steps above their task, with an
+        // unrelated task between them.
+        t.raw(&s1, "parent_id", p.as_str());
+        t.raw(&s2, "parent_id", p.as_str());
+        t.raw(&s2, "done", true);
+
+        assert_eq!(t.outline(), ["x", "p 1/2", "  s2", "  s1"]);
+        assert_eq!(t.rows()[2].parent_id.as_deref(), Some(p.as_str()));
+        let snap = t.doc.read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0));
+        assert_eq!(snap.lists[0].task_count, 4);
+    }
+
+    #[test]
+    fn read_ignores_a_parent_id_that_does_not_hold_up() {
+        let mut t = Fixture::new();
+        let work = t.work_list();
+        let missing = t.task("missing");
+        t.raw(&missing, "parent_id", "nope");
+        let itself = t.task("itself");
+        t.raw(&itself, "parent_id", itself.as_str());
+        let elsewhere = t.task_in("elsewhere", &work);
+        let other_list = t.task("other list");
+        t.raw(&other_list, "parent_id", elsewhere.as_str());
+        let wrong_type = t.task("wrong type");
+        t.raw(&wrong_type, "parent_id", 5);
+        // h under i and i under h, as two devices could each have written.
+        let (h, i) = (t.task("h"), t.task("i"));
+        t.raw(&h, "parent_id", i.as_str());
+        t.raw(&i, "parent_id", h.as_str());
+        // g under f under e: only f is a step; a step can't have steps.
+        let (e, f, g) = (t.task("e"), t.task("f"), t.task("g"));
+        t.raw(&f, "parent_id", e.as_str());
+        t.raw(&g, "parent_id", f.as_str());
+
+        assert_eq!(
+            t.outline(),
+            [
+                "g",
+                "e 0/1",
+                "  f",
+                "i",
+                "h",
+                "wrong type",
+                "other list",
+                "itself",
+                "missing"
+            ]
+        );
+        assert_eq!(t.view_in(ViewFilter::All, &work), ["elsewhere"]);
+    }
+
+    #[test]
+    fn a_task_stored_done_reads_open_while_a_step_is_open() {
+        let mut t = Fixture::new();
+        let task = t.task("task");
+        t.step("step", &task);
+        let mut b = Doc::load(2, &t.doc.export_snapshot().unwrap()).unwrap();
+
+        // Device a completes the task and its step; device b, offline, adds
+        // another step to it. Then they sync.
+        t.ok(done(&task, true));
+        assert_eq!(t.done(), [true, true]);
+        let late = add_task(&mut b, &t.ids, "late step", DEFAULT_LIST_ID);
+        set_raw_field(&b, &late, "parent_id", task.as_str());
+        t.doc.import_updates(&b.export_updates().unwrap()).unwrap();
+
+        assert_eq!(t.outline(), ["task 1/2", "  late step", "  step"]);
+        assert_eq!(t.done(), [false, false, true]);
+        assert_eq!(t.view(ViewFilter::Active), ["task 1/2", "  late step"]);
+        let snap = t.doc.read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0));
+        assert_eq!(snap.active_count, 2);
+
+        // Once the last step is done too, the stored value counts again.
+        t.raw(&late, "done", true);
+        assert_eq!(t.done(), [true, true, true]);
+        let snap = t.doc.read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0));
+        assert_eq!(snap.active_count, 0);
+        assert_eq!(t.rows()[0].id, task);
+    }
+
+    #[test]
+    fn views_show_a_task_for_its_matching_steps() {
+        let mut t = Fixture::new();
+        // half: one step done, one open. finished: its only step done.
+        // closed: done along with its step.
+        let half = t.task("half");
+        let half_done = t.task("half done");
+        let half_open = t.task("half open");
+        let finished = t.task("finished");
+        let finished_step = t.task("finished step");
+        let closed = t.task("closed");
+        let closed_step = t.task("closed step");
+        for (step, task) in [
+            (&half_done, &half),
+            (&half_open, &half),
+            (&finished_step, &finished),
+            (&closed_step, &closed),
+        ] {
+            t.raw(step, "parent_id", task.as_str());
+        }
+        for id in [&half_done, &finished_step, &closed, &closed_step] {
+            t.raw(id, "done", true);
+        }
+
+        assert_eq!(
+            t.view(ViewFilter::Active),
+            ["finished 1/1", "half 1/2", "  half open"]
+        );
+        assert_eq!(
+            t.view(ViewFilter::Completed),
+            [
+                "closed 1/1",
+                "  closed step",
+                "(finished)",
+                "  finished step",
+                "(half)",
+                "  half done"
+            ]
+        );
+        assert_eq!(t.outline().len(), 7);
+    }
+
+    #[test]
+    fn a_task_with_steps_shows_its_next_due_date() {
+        const DAY: i64 = crate::civil::SECONDS_PER_DAY;
+        let mut t = Fixture::new();
+        let task = t.task("task");
+        let soon = t.step("soon", &task);
+        let later = t.step("later", &task);
+        t.step("undated", &task);
+        t.raw(&soon, "due", 0);
+        t.raw(&later, "due", DAY);
+        let due = |t: &Fixture| -> Vec<(Option<i64>, Option<String>, DueState)> {
+            let rows = t.rows();
+            rows.into_iter()
+                .map(|r| (r.due, r.due_label, r.due_state))
+                .collect()
+        };
+        let today = || Some("Today".to_string());
+        let tomorrow = || Some("Tomorrow".to_string());
+
+        // No own date: the soonest open step's. Steps keep their own.
+        assert_eq!(
+            due(&t),
+            [
+                (None, today(), DueState::Today),
+                (Some(0), today(), DueState::Today),
+                (Some(DAY), tomorrow(), DueState::Later),
+                (None, None, DueState::None),
+            ]
+        );
+        // A done step's date no longer counts.
+        t.raw(&soon, "done", true);
+        assert_eq!(due(&t)[0], (None, tomorrow(), DueState::Later));
+        // An own date counts when it's sooner; `due` stays the raw one.
+        t.raw(&task, "due", -DAY);
+        assert_eq!(
+            due(&t)[0],
+            (Some(-DAY), Some("31 Dec".to_string()), DueState::Overdue)
+        );
+        t.raw(&task, "due", 10 * DAY);
+        assert_eq!(due(&t)[0], (Some(10 * DAY), tomorrow(), DueState::Later));
+    }
+
+    #[test]
+    fn add_step_lands_last_in_its_task_and_its_list() {
+        let mut t = Fixture::new();
+        let work = t.work_list();
+        let task = t.task_in("task", &work);
+        t.task_in("other", &work);
+        let first = t.step("first", &task);
+        // Naming a step adds to that step's task.
+        t.step("second", &first);
+        assert_eq!(
+            t.view_in(ViewFilter::All, &work),
+            ["other", "task 0/2", "  first", "  second"]
+        );
+        assert!(t.outline().is_empty());
+
+        let revision = t.revision();
+        t.ok(add_step("  ", &task));
+        assert_eq!(t.revision(), revision);
+        assert!(not_found(t.run(add_step("x", "gone"))));
+    }
+
+    #[test]
+    fn add_step_to_a_done_task_reopens_it_in_one_undo_step() {
+        let mut t = Fixture::new();
+        let task = t.task("task");
+        t.ok(done(&task, true));
+        t.step("step", &task);
+        assert_eq!(t.done(), [false, false]);
+        let stored = t.doc.existing_task_map(&task).unwrap().get("done").unwrap();
+        assert_eq!(stored.get_deep_value(), false.into());
+
+        t.ok(Command::Undo);
+        assert_eq!(t.outline(), ["task"]);
+        assert_eq!(t.done(), [true]);
+    }
+
+    #[test]
+    fn set_parent_indents_to_last_step_and_outdents_to_just_below() {
+        let mut t = Fixture::new();
+        let x = t.task("x");
+        let task = t.task("task");
+        let s1 = t.step("s1", &task);
+        t.task("y");
+        // Moving the task to the top leaves its step's entry below y in
+        // `order`, which must not decide where an outdented step lands.
+        t.ok(mv(&task, None));
+        assert_eq!(t.outline(), ["task 0/1", "  s1", "y", "x"]);
+
+        t.ok(parent(&x, Some(&task)));
+        assert_eq!(t.outline(), ["task 0/2", "  s1", "  x", "y"]);
+
+        let revision = t.revision();
+        t.ok(parent(&x, Some(&task)));
+        t.ok(parent(&task, None));
+        assert_eq!(t.revision(), revision);
+
+        t.ok(parent(&s1, None));
+        assert_eq!(t.outline(), ["task 0/1", "  x", "s1", "y"]);
+        t.ok(Command::Undo);
+        assert_eq!(t.outline(), ["task 0/2", "  s1", "  x", "y"]);
+    }
+
+    #[test]
+    fn set_parent_rejects_what_would_break_the_tree() {
+        let mut t = Fixture::new();
+        let work = t.work_list();
+        let elsewhere = t.task_in("elsewhere", &work);
+        let plain = t.task("plain");
+        let task = t.task("task");
+        let step = t.step("step", &task);
+
+        assert!(rejected(t.run(parent(&plain, Some(&elsewhere))))); // another list
+        assert!(rejected(t.run(parent(&plain, Some(&step))))); // a step can't have steps
+        assert!(rejected(t.run(parent(&task, Some(&plain))))); // has steps of its own
+        assert!(rejected(t.run(parent(&plain, Some(&plain))))); // itself
+        assert!(not_found(t.run(parent("gone", None))));
+        assert!(not_found(t.run(parent(&plain, Some("gone")))));
+    }
+
+    #[test]
+    fn indenting_an_open_task_under_a_done_one_reopens_it() {
+        let mut t = Fixture::new();
+        let open = t.task("open");
+        let closed = t.task("closed");
+        let finished = t.task("finished");
+        t.ok(done(&closed, true));
+        t.ok(done(&finished, true));
+
+        // A done task joining stays done.
+        t.ok(parent(&finished, Some(&closed)));
+        assert!(t.done()[0]);
+        t.ok(parent(&open, Some(&closed)));
+        assert!(!t.done()[0]);
+    }
+
+    #[test]
+    fn outdent_clears_a_stored_parent_read_was_ignoring() {
+        let mut t = Fixture::new();
+        let work = t.work_list();
+        let target = t.task_in("target", &work);
+        let stray = t.task("stray");
+        t.raw(&stray, "parent_id", target.as_str());
+
+        let revision = t.revision();
+        t.ok(parent(&stray, None));
+        assert!(t.revision() > revision);
+        // Bypasses `SetList` (which clears it too) to show the field is gone.
+        t.raw(&target, "list_id", DEFAULT_LIST_ID);
+        assert_eq!(t.outline(), ["stray", "target"]);
+    }
+
+    #[test]
+    fn completing_a_task_completes_its_steps_in_one_undo_step() {
+        let mut t = Fixture::new();
+        let task = t.task("task");
+        let a = t.step("a", &task);
+        t.step("b", &task);
+        t.ok(done(&a, true));
+
+        t.ok(done(&task, true));
+        assert_eq!(t.done(), [true, true, true]);
+        let revision = t.revision();
+        t.ok(done(&task, true));
+        assert_eq!(t.revision(), revision);
+
+        t.ok(Command::Undo);
+        assert_eq!(t.done(), [false, true, false]);
+    }
+
+    #[test]
+    fn steps_and_their_task_complete_and_reopen_by_the_agreed_rules() {
+        let mut t = Fixture::new();
+        let task = t.task("task");
+        let a = t.step("a", &task);
+
+        // The last step done leaves the task open.
+        t.ok(done(&a, true));
+        assert_eq!(t.done(), [false, true]);
+        // Reopening the task leaves its steps alone.
+        t.ok(done(&task, true));
+        t.ok(done(&task, false));
+        assert_eq!(t.done(), [false, true]);
+        // Reopening a step reopens its task, as one undo step.
+        t.ok(done(&task, true));
+        t.ok(done(&a, false));
+        assert_eq!(t.done(), [false, false]);
+        t.ok(Command::Undo);
+        assert_eq!(t.done(), [true, true]);
+
+        assert!(not_found(t.run(done("gone", true))));
+    }
+
+    #[test]
+    fn deleting_a_task_deletes_its_steps() {
+        let mut t = Fixture::new();
+        let task = t.task("task");
+        let a = t.step("a", &task);
+        t.step("b", &task);
+        t.task("other");
+
+        t.ok(delete(&a));
+        assert_eq!(t.outline(), ["other", "task 0/1", "  b"]);
+        t.ok(delete(&task));
+        assert_eq!(t.outline(), ["other"]);
+        assert_eq!((t.doc.task_count(), t.doc.order_len()), (1, 1));
+        t.ok(Command::Undo);
+        assert_eq!(t.outline(), ["other", "task 0/1", "  b"]);
+    }
+
+    #[test]
+    fn delete_still_removes_a_malformed_task() {
+        let mut t = Fixture::new();
+        let task = t
+            .doc
+            .doc
+            .get_map("tasks")
+            .ensure_mergeable_map("x")
+            .unwrap();
+        task.insert("title", 42).unwrap();
+        t.doc.doc.get_movable_list("order").insert(0, "x").unwrap();
+        t.doc.doc.commit();
+        t.ok(delete("x"));
+        assert_eq!((t.doc.task_count(), t.doc.order_len()), (0, 0));
+    }
+
+    #[test]
+    fn delete_and_add_report_what_they_cannot_find() {
+        let mut t = Fixture::new();
+        assert!(not_found(t.run(delete("gone"))));
+        let add = Command::Add {
+            title: "x".to_string(),
+            after: None,
+            due: None,
+            list_id: Some("gone".to_string()),
+            parent_id: None,
+        };
+        assert!(not_found(t.run(add)));
+    }
+
+    #[test]
+    fn set_list_takes_steps_along_and_detaches_a_lone_step() {
+        let mut t = Fixture::new();
+        let work = t.work_list();
+        t.task_in("there", &work);
+        let task = t.task("task");
+        let a = t.step("a", &task);
+        t.step("b", &task);
+
+        t.ok(set_list(&a, &work));
+        assert_eq!(t.view_in(ViewFilter::All, &work), ["a", "there"]);
+        t.ok(set_list(&task, &work));
+        assert_eq!(
+            t.view_in(ViewFilter::All, &work),
+            ["task 0/1", "  b", "a", "there"]
+        );
+        assert!(t.outline().is_empty());
+        t.ok(Command::Undo);
+        assert_eq!(t.outline(), ["task 0/1", "  b"]);
+    }
+
+    #[test]
+    fn set_list_clears_a_stored_parent_that_would_count_in_the_new_list() {
+        let mut t = Fixture::new();
+        let work = t.work_list();
+        let target = t.task_in("target", &work);
+        let stray = t.task("stray");
+        t.raw(&stray, "parent_id", target.as_str());
+        t.ok(set_list(&stray, &work));
+        assert_eq!(t.view_in(ViewFilter::All, &work), ["stray", "target"]);
+    }
+
+    #[test]
+    fn a_step_moves_only_among_its_siblings() {
+        let mut t = Fixture::new();
+        let other = t.task("other");
+        let task = t.task("task");
+        let a = t.step("a", &task);
+        let b = t.step("b", &task);
+        let c = t.step("c", &task);
+
+        t.ok(mv(&a, Some(&c)));
+        assert_eq!(t.outline(), ["task 0/3", "  b", "  c", "  a", "other"]);
+        // `None` and the task itself both mean "first step".
+        t.ok(mv(&a, None));
+        assert_eq!(t.outline(), ["task 0/3", "  a", "  b", "  c", "other"]);
+        t.ok(mv(&c, Some(&task)));
+        assert_eq!(t.outline(), ["task 0/3", "  c", "  a", "  b", "other"]);
+
+        let revision = t.revision();
+        t.ok(mv(&c, None));
+        assert_eq!(t.revision(), revision);
+        assert!(rejected(t.run(mv(&b, Some(&other)))));
+    }
+
+    #[test]
+    fn a_lone_step_moving_to_first_is_a_no_op() {
+        let mut t = Fixture::new();
+        let task = t.task("task");
+        let only = t.step("only", &task);
+        let revision = t.revision();
+        t.ok(mv(&only, None));
+        assert_eq!(t.revision(), revision);
+    }
+
+    #[test]
+    fn a_task_moved_after_a_step_lands_below_that_steps_block() {
+        let mut t = Fixture::new();
+        let x = t.task("x");
+        let task = t.task("task");
+        t.step("a", &task);
+        let b = t.step("b", &task);
+        let top = t.task("top");
+        assert_eq!(t.outline(), ["top", "task 0/2", "  a", "  b", "x"]);
+
+        t.ok(mv(&top, Some(&b)));
+        assert_eq!(t.outline(), ["task 0/2", "  a", "  b", "top", "x"]);
+        t.ok(mv(&x, Some(&task)));
+        assert_eq!(t.outline(), ["task 0/2", "  a", "  b", "x", "top"]);
+    }
+
+    #[test]
+    fn relative_commands_are_not_doc_commands() {
+        let mut t = Fixture::new();
+        let id = "a".to_string();
+        assert!(rejected(t.run(Command::Indent { id: id.clone() })));
+        assert!(rejected(t.run(Command::Outdent { id: id.clone() })));
+        assert!(rejected(t.run(Command::Shift { id, delta: 1 })));
     }
 }

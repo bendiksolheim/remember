@@ -11,9 +11,12 @@ import RememberKit
 /// The entire macOS UI for v1: a quick-add field, the live incomplete task
 /// list, inline title editing ("e" on the focused row), reordering the
 /// focused row (alt+shift+j/alt+shift+k), switching the sticky current list
-/// (`ListPillRow`), and moving the focused row to a different list
+/// (`ListPillRow`), moving the focused row to a different list
 /// (⌘⌥1–⌘⌥9, mirroring the plain ⌘1–⌘9 switch shortcuts -- see
-/// `moveFocusedRow`). Deleting is still out of scope here -- that remains
+/// `moveFocusedRow`), and grouping tasks into steps ("a" aims the
+/// quick-add field at the focused row's task -- see `addTargetID` --
+/// and Tab / ⇧Tab indent and outdent the focused row). Deleting is
+/// still out of scope here -- that remains
 /// reachable only via `RememberUI`'s `TaskListView`, which iOS still uses but
 /// this target no longer wires up.
 struct CaptureView: SwiftUI.View {
@@ -39,6 +42,10 @@ struct CaptureView: SwiftUI.View {
     /// input — cleared again on the next keystroke, so a fresh phrase is
     /// never silently suppressed by an old dismissal.
     @State private var dueDismissed = false
+    /// The task captures go into as steps ("a" on a row; shown as a chip).
+    /// Survives Enter; cleared by Esc, ⌫ in an empty field, switching list,
+    /// hiding the panel, or the task leaving the snapshot.
+    @State private var addTargetID: String?
     /// Unifies the quick-add field and every row into one keyboard-focus
     /// chain: alt+j/alt+k (and plain down/up arrow) walk `focusChain` (input
     /// first, then rows in display order) and wrap at both ends. `fileprivate`, not `private`,
@@ -73,6 +80,9 @@ struct CaptureView: SwiftUI.View {
     /// on complete/un-complete -- this keeps every row's position stable
     /// across the whole ghost lifecycle.
     @State private var ghostAnchors: [String: String] = [:]
+    /// Steps ghosted with their task, by task id, so un-completing the task
+    /// brings them back too.
+    @State private var ghostBlocks: [String: [String]] = [:]
     /// Ghost ids that have been un-completed but are kept in `ghosts` until
     /// `model.snapshot` actually confirms the row is active again --
     /// `RememberModel`'s snapshot updates hop through a `Task { @MainActor in
@@ -123,7 +133,10 @@ struct CaptureView: SwiftUI.View {
     var body: some SwiftUI.View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                TextField("Add a task…", text: $input)
+                if let target = addTarget {
+                    CaptureParentChip(title: target.title) { addTargetID = nil }
+                }
+                TextField(addTarget == nil ? "Add a task…" : "Add a step…", text: $input)
                     .textFieldStyle(.plain)
                     .font(.system(size: 22))
                     .focused($focus, equals: .input)
@@ -198,7 +211,19 @@ struct CaptureView: SwiftUI.View {
         // always-dark background in Light Mode, a real contrast bug rather
         // than just a styling choice.
         .preferredColorScheme(.dark)
-        .onExitCommand(perform: onDismiss)
+        // With a step target, the first Esc only drops it.
+        .onExitCommand {
+            if addTargetID != nil {
+                addTargetID = nil
+            } else {
+                onDismiss()
+            }
+        }
+        // The panel is ordered out, not torn down, so `onDisappear` doesn't
+        // fire. The next summon must be a plain capture.
+        .onReceive(NotificationCenter.default.publisher(for: .rememberCapturePanelDidHide)) { _ in
+            addTargetID = nil
+        }
         .onAppear {
             focus = .input
             installOptionNavMonitor()
@@ -210,6 +235,10 @@ struct CaptureView: SwiftUI.View {
         .onChange(of: model.snapshot?.revision) { _, _ in
             reconcileRevivedGhosts()
             reconcileUndoneMoves()
+            // The target is gone (completed, deleted, moved, synced away).
+            if addTargetID != nil, addTarget == nil {
+                addTargetID = nil
+            }
         }
         .onChange(of: focus) { oldValue, _ in
             // Focus left the edit field for a reason other than our own
@@ -272,6 +301,11 @@ struct CaptureView: SwiftUI.View {
                 Button("Edit Focused") { beginEditFocusedRow() }
                     .keyboardShortcut("e", modifiers: [])
                     .disabled(!canEditFocusedRow)
+                // Bare "a": add steps to the focused row's task. Gated like
+                // "e", so it never eats an "a" typed into a field.
+                Button("Add Step to Focused") { targetFocusedRow() }
+                    .keyboardShortcut("a", modifiers: [])
+                    .disabled(!canEditFocusedRow)
             }
             .hidden()
         }
@@ -289,6 +323,19 @@ struct CaptureView: SwiftUI.View {
             // `modifierFlags` even with no modifier actually held, so those
             // two are stripped before checking for "no real modifier" --
             // `flags.isEmpty` alone is never true for an arrow press.
+            // Tab / ⇧Tab indent and outdent the focused row. Swallowed in
+            // the quick-add field too (↑↓ and ⌥J/K walk the rows).
+            if event.keyCode == 48, flags.isEmpty || flags == [.shift], editingRowID == nil { // kVK_Tab
+                if case .row(let id)? = focus, isLive(id) {
+                    model.dispatch(flags.isEmpty ? .indent(id: id) : .outdent(id: id))
+                }
+                return nil
+            }
+            // ⌫ in an empty field drops the step target, like a token field.
+            if event.keyCode == 51, flags.isEmpty, focus == .input, input.isEmpty, addTargetID != nil { // kVK_Delete
+                addTargetID = nil
+                return nil
+            }
             let arrowFlags = flags.subtracting([.numericPad, .function])
             if arrowFlags.isEmpty, editingRowID == nil {
                 switch event.keyCode {
@@ -349,6 +396,7 @@ struct CaptureView: SwiftUI.View {
     /// with, so this just makes that the outcome unconditionally.
     private func selectList(_ listId: String) {
         model.setCurrentList(listId)
+        addTargetID = nil
         focus = .input
     }
 
@@ -368,34 +416,33 @@ struct CaptureView: SwiftUI.View {
         focus = chain[nextIndex]
     }
 
-    /// alt+shift+j/alt+shift+k: swap the focused row with its adjacent
-    /// *active* neighbor (ghosts and the input field aren't real order
-    /// entries, so the `.row` match plus `rows.firstIndex` already excludes
-    /// them -- no separate ghost/input check needed). Clamps at the ends
-    /// rather than wrapping like `moveFocus` does: sending a row to the
-    /// opposite end of the list on an edge press would be a much bigger,
-    /// easier-to-regret jump than just moving focus there.
-    ///
-    /// `Move`'s `after` is relational (remember-core resolves it directly
-    /// against its own order) -- here that means "the id `rows` already puts right where
-    /// the focused row should land": moving down lands right after the
-    /// neighbor being passed, moving up lands right after whatever was two
-    /// slots up (or at the front, if the neighbor was already first).
+    /// alt+shift+j/alt+shift+k: remember-core's `Shift` moves the row among
+    /// its peers and clamps at the ends.
     private func moveFocusedRow(by delta: Int) {
-        guard case .row(let id)? = focus,
-            let rows = model.snapshot?.rows,
-            let index = rows.firstIndex(where: { $0.id == id })
-        else { return }
-        let neighborIndex = index + delta
-        guard rows.indices.contains(neighborIndex) else { return }
+        guard case .row(let id)? = focus, isLive(id) else { return }
+        model.dispatch(.shift(id: id, delta: Int32(delta)))
+    }
 
-        let after: String?
-        if delta > 0 {
-            after = rows[neighborIndex].id
-        } else {
-            after = neighborIndex > 0 ? rows[neighborIndex - 1].id : nil
-        }
-        model.dispatch(.move(id: id, after: after))
+    /// Whether `id` is in the live snapshot, not a ghost or fading row.
+    private func isLive(_ id: String) -> Bool {
+        !ghosts.contains { $0.id == id }
+            && !fadingMoveIDs.contains(id)
+            && (model.snapshot?.rows.contains { $0.id == id } ?? false)
+    }
+
+    /// The live row `addTargetID` names, or `nil` once it's gone.
+    private var addTarget: TaskRow? {
+        guard let addTargetID else { return nil }
+        return model.snapshot?.rows.first { $0.id == addTargetID }
+    }
+
+    /// "a": aim the quick-add field at the focused row's task and focus it.
+    private func targetFocusedRow() {
+        guard case .row(let id)? = focus, isLive(id),
+            let row = model.snapshot?.rows.first(where: { $0.id == id })
+        else { return }
+        addTargetID = row.parentId ?? row.id
+        focus = .input
     }
 
     private func toggleFocusedRow() {
@@ -418,28 +465,34 @@ struct CaptureView: SwiftUI.View {
             let index = rows.firstIndex(where: { $0.id == id }),
             rows[index].listId != listId
         else { return }
-        let row = rows[index]
+        // A task's steps move (and fade) with it.
+        let block = Self.block(at: index, in: rows)
 
-        // Computed from the chain *before* dispatch -- once the row leaves
-        // `model.snapshot.rows` the chain would no longer contain it at
+        // Computed from the chain *before* dispatch -- once the rows leave
+        // `model.snapshot.rows` the chain would no longer contain them at
         // all, so there'd be nothing to find "the next one after" from.
         // Unlike `removeGhost`'s equivalent check, no `focus == .row(id)`
         // re-check is needed before applying it: everything here runs
         // synchronously, so focus can't have moved out from under us
         // between the guard above and this assignment.
         let chain = focusChain
-        guard let chainIndex = chain.firstIndex(of: .row(id)) else { return }
+        guard let last = block.last, let chainIndex = chain.firstIndex(of: .row(last.id)) else { return }
         let successor = chain[(chainIndex + 1) % chain.count]
 
         model.dispatch(.setList(id: id, listId: listId))
         focus = successor
 
         withAnimation(.easeOut(duration: 0.5)) {
-            fadingMoveAnchors[id] = index > 0 ? rows[index - 1].id : ""
-            fadingMoveRows[id] = row
-            fadingMoveIDs.insert(id)
+            for (offset, row) in block.enumerated() {
+                let rowIndex = index + offset
+                fadingMoveAnchors[row.id] = rowIndex > 0 ? rows[rowIndex - 1].id : ""
+                fadingMoveRows[row.id] = row
+                fadingMoveIDs.insert(row.id)
+            }
         }
-        scheduleMoveFadeRemoval(id: id)
+        for row in block {
+            scheduleMoveFadeRemoval(id: row.id)
+        }
 
         blink(listId: listId)
     }
@@ -557,12 +610,20 @@ struct CaptureView: SwiftUI.View {
         let overlayIDs = Set(ghosts.map(\.id)).union(fadingMoveIDs)
         let active = (model.snapshot?.rows ?? []).filter { !overlayIDs.contains($0.id) }
 
+        // Recursive: steps that left with their task anchor to the overlay
+        // row above them.
         func overlaysAnchored(to anchor: String) -> [(TaskRow, Bool, Bool)] {
-            let ghostEntries = ghosts.filter { ghostAnchors[$0.id] == anchor }
-                .map { ($0, !revivedIDs.contains($0.id), false) }
-            let fadingEntries = fadingMoveIDs.filter { fadingMoveAnchors[$0] == anchor }
-                .compactMap { id in fadingMoveRows[id].map { (row: $0, completed: false, fading: true) } }
-            return ghostEntries + fadingEntries
+            var entries: [(TaskRow, Bool, Bool)] = []
+            for ghost in ghosts where ghostAnchors[ghost.id] == anchor {
+                entries.append((ghost, !revivedIDs.contains(ghost.id), false))
+                entries += overlaysAnchored(to: ghost.id)
+            }
+            for id in fadingMoveIDs where fadingMoveAnchors[id] == anchor {
+                guard let row = fadingMoveRows[id] else { continue }
+                entries.append((row, false, true))
+                entries += overlaysAnchored(to: id)
+            }
+            return entries
         }
 
         var result = overlaysAnchored(to: "")
@@ -590,10 +651,11 @@ struct CaptureView: SwiftUI.View {
     }
 
     private func addTask() {
+        let parentId = addTarget?.id
         if let detection = dueDetection, !dueDismissed {
-            model.dispatch(.add(title: detection.strippedTitle, after: nil, due: detection.due, listId: nil))
+            model.dispatch(.add(title: detection.strippedTitle, after: nil, due: detection.due, listId: nil, parentId: parentId))
         } else {
-            model.dispatch(.add(title: input, after: nil, due: nil, listId: nil))
+            model.dispatch(.add(title: input, after: nil, due: nil, listId: nil, parentId: parentId))
         }
         input = ""
         dueDetection = nil
@@ -610,10 +672,21 @@ struct CaptureView: SwiftUI.View {
             // un-complete it. Stays in `ghosts`, just marked as reviving,
             // until `model.snapshot` confirms it's active again -- see
             // `revivedIDs`.
-            ghostRemovalTasks[id]?.cancel()
-            ghostRemovalTasks[id] = nil
-            revivedIDs.insert(id)
+            revive(id: id)
             model.dispatch(.setDone(id: id, done: false))
+            // A block completed together comes back together.
+            for stepID in ghostBlocks.removeValue(forKey: id) ?? []
+            where ghosts.contains(where: { $0.id == stepID }) && !revivedIDs.contains(stepID) {
+                revive(id: stepID)
+                model.dispatch(.setDone(id: stepID, done: false))
+            }
+            // Reopening a step reopens its task, so a lingering task ghost
+            // comes back too.
+            if let taskID = ghosts.first(where: { $0.id == id })?.parentId,
+                ghosts.contains(where: { $0.id == taskID }),
+                !revivedIDs.contains(taskID) {
+                revive(id: taskID)
+            }
         } else if isGhost {
             // Was reviving (still in `ghosts`, not yet confirmed active) --
             // re-completing it before that confirmation lands just flips it
@@ -621,12 +694,42 @@ struct CaptureView: SwiftUI.View {
             revivedIDs.remove(id)
             model.dispatch(.setDone(id: id, done: true))
             scheduleGhostRemoval(id: id)
+            // Its steps get completed again, so they linger again too.
+            let steps = ghosts.filter { $0.parentId == id && revivedIDs.contains($0.id) }.map(\.id)
+            for stepID in steps {
+                revivedIDs.remove(stepID)
+                scheduleGhostRemoval(id: stepID)
+            }
+            if !steps.isEmpty {
+                ghostBlocks[id] = steps
+            }
         } else if let rows = model.snapshot?.rows, let idx = rows.firstIndex(where: { $0.id == id }) {
             model.dispatch(.setDone(id: id, done: true))
-            ghostAnchors[id] = idx > 0 ? rows[idx - 1].id : ""
-            ghosts.append(rows[idx])
-            scheduleGhostRemoval(id: id)
+            let block = Self.block(at: idx, in: rows)
+            for (offset, row) in block.enumerated() {
+                let rowIndex = idx + offset
+                ghostAnchors[row.id] = rowIndex > 0 ? rows[rowIndex - 1].id : ""
+                ghosts.append(row)
+                scheduleGhostRemoval(id: row.id)
+            }
+            if block.count > 1 {
+                ghostBlocks[id] = block.dropFirst().map(\.id)
+            }
         }
+    }
+
+    /// Marks a ghost as coming back (see `revivedIDs`).
+    private func revive(id: String) {
+        ghostRemovalTasks[id]?.cancel()
+        ghostRemovalTasks[id] = nil
+        revivedIDs.insert(id)
+    }
+
+    /// The row at `index` plus, for a task, its steps shown below it.
+    private static func block(at index: Int, in rows: [TaskRow]) -> [TaskRow] {
+        let row = rows[index]
+        guard row.parentId == nil else { return [row] }
+        return [row] + rows[(index + 1)...].prefix { $0.parentId == row.id }
     }
 
     private func scheduleGhostRemoval(id: String) {
@@ -652,6 +755,7 @@ struct CaptureView: SwiftUI.View {
         ghosts.removeAll { $0.id == id }
         ghostAnchors[id] = nil
         ghostRemovalTasks[id] = nil
+        ghostBlocks[id] = nil
         revivedIDs.remove(id)
         if let successor {
             focus = successor
@@ -912,11 +1016,17 @@ private struct CaptureTaskRow: SwiftUI.View {
 
             Spacer()
 
+            if row.stepCount > 0, !isEditing {
+                Text("\(row.stepsDone)/\(row.stepCount)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
             if let label = row.dueLabel, !isEditing {
                 CaptureDueChip(label: label, tint: dueChipColor(state: row.dueState, done: completed))
             }
         }
-        .padding(.horizontal, 20)
+        .padding(.leading, row.parentId == nil ? 20 : 46)
+        .padding(.trailing, 20)
         .padding(.vertical, 8)
         .background(isFocused ? Color.accentColor.opacity(0.25) : Color.clear)
         .overlay(alignment: .leading) {
@@ -958,6 +1068,38 @@ private struct CaptureDueChip: SwiftUI.View {
             .padding(.vertical, 4)
             .background(tint.opacity(0.2), in: Capsule())
     }
+}
+
+/// "Tax return ›" in front of the quick-add field while adding steps (see
+/// `CaptureView.addTargetID`). Clicking it drops the target.
+private struct CaptureParentChip: SwiftUI.View {
+    let title: String
+    let onClear: () -> Void
+
+    var body: some SwiftUI.View {
+        Button(action: onClear) {
+            HStack(spacing: 2) {
+                Text(title)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(Color.accentColor)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.accentColor.opacity(0.2), in: Capsule())
+            .frame(maxWidth: 220, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+    }
+}
+
+extension Notification.Name {
+    /// Posted by `AppDelegate` whenever it orders the capture panel out.
+    static let rememberCapturePanelDidHide = Notification.Name("rememberCapturePanelDidHide")
 }
 
 /// A clickable `CaptureDueChip` showing a live-detected due date, for the

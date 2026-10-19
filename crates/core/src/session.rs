@@ -54,6 +54,9 @@ impl Session {
         clock: &dyn Clock,
         ids: &dyn IdSource,
     ) -> Result<bool, CoreError> {
+        let Some(command) = self.resolve_relative(command, clock)? else {
+            return Ok(false);
+        };
         let command = Self::resolve_capture_list(command, &self.current_list);
         let deleted_list_id = match &command {
             Command::DeleteList { id } => Some(id.clone()),
@@ -95,6 +98,73 @@ impl Session {
         Ok(true)
     }
 
+    /// Turns `Indent`, `Outdent` and `Shift` into explicit `Doc` commands
+    /// against the rows currently shown. `None` when there's nothing to do;
+    /// other commands pass through.
+    fn resolve_relative(
+        &self,
+        command: Command,
+        clock: &dyn Clock,
+    ) -> Result<Option<Command>, CoreError> {
+        enum Relative {
+            Indent,
+            Outdent,
+            Shift(i32),
+        }
+        let (id, relative) = match command {
+            Command::Indent { id } => (id, Relative::Indent),
+            Command::Outdent { id } => (id, Relative::Outdent),
+            Command::Shift { id, delta } => (id, Relative::Shift(delta)),
+            other => return Ok(Some(other)),
+        };
+        let rows = self.current(clock).rows;
+        let index = rows
+            .iter()
+            .position(|r| r.id == id)
+            .ok_or_else(|| CoreError::NotFound(id.clone()))?;
+        let row = &rows[index];
+
+        Ok(match relative {
+            Relative::Indent => {
+                if row.parent_id.is_some() || row.step_count > 0 {
+                    return Ok(None);
+                }
+                rows[..index]
+                    .iter()
+                    .rev()
+                    .find(|r| r.parent_id.is_none())
+                    .map(|above| Command::SetParent {
+                        id,
+                        parent_id: Some(above.id.clone()),
+                    })
+            }
+            Relative::Outdent => row.parent_id.as_ref().map(|_| Command::SetParent {
+                id,
+                parent_id: None,
+            }),
+            Relative::Shift(delta) => {
+                // A step's peers are its siblings; a task's are the
+                // top-level rows, each standing for its block.
+                let peers: Vec<&str> = rows
+                    .iter()
+                    .filter(|r| r.parent_id == row.parent_id)
+                    .map(|r| r.id.as_str())
+                    .collect();
+                let from = peers.iter().position(|&p| p == id).unwrap_or_default();
+                let last = peers.len() as i64 - 1;
+                let to = (from as i64 + i64::from(delta)).clamp(0, last) as usize;
+                let after = match to.cmp(&from) {
+                    std::cmp::Ordering::Equal => return Ok(None),
+                    std::cmp::Ordering::Greater => Some(peers[to].to_string()),
+                    // After the task itself: `Doc`'s "first step".
+                    std::cmp::Ordering::Less if to > 0 => Some(peers[to - 1].to_string()),
+                    std::cmp::Ordering::Less => row.parent_id.clone(),
+                };
+                Some(Command::Move { id, after })
+            }
+        })
+    }
+
     /// Fills in `Command::Add`'s `list_id` with the sticky current capture
     /// list when the caller didn't specify one — the one piece of "which
     /// list is this app currently pointed at" business logic, kept here so
@@ -107,11 +177,13 @@ impl Session {
                 after,
                 due,
                 list_id: None,
+                parent_id,
             } => Command::Add {
                 title,
                 after,
                 due,
                 list_id: Some(capture_list_id.to_string()),
+                parent_id,
             },
             other => other,
         }
@@ -175,6 +247,7 @@ mod tests {
             after: None,
             due: None,
             list_id: None,
+            parent_id: None,
         }
     }
 
@@ -266,5 +339,130 @@ mod tests {
             .expect("detected");
         assert_eq!(detection.stripped_title, "call mum");
         assert_eq!(detection.label, "Tomorrow");
+    }
+
+    /// Adds top-level tasks in display order; returns their ids.
+    fn add_tasks(s: &mut Session, ids: &SeqIdSource, titles: &[&str]) -> Vec<String> {
+        for title in titles.iter().rev() {
+            s.dispatch(add(title), &FixedClock(NOW), ids).expect("add");
+        }
+        let rows = s.current(&FixedClock(NOW)).rows;
+        titles
+            .iter()
+            .map(|t| {
+                rows.iter()
+                    .find(|r| r.title == *t)
+                    .expect("added")
+                    .id
+                    .clone()
+            })
+            .collect()
+    }
+
+    fn outline(s: &Session) -> Vec<String> {
+        s.current(&FixedClock(NOW))
+            .rows
+            .into_iter()
+            .map(|r| match r.parent_id {
+                Some(_) => format!("  {}", r.title),
+                None => r.title,
+            })
+            .collect()
+    }
+
+    fn run(s: &mut Session, ids: &SeqIdSource, command: Command) {
+        s.dispatch(command, &FixedClock(NOW), ids)
+            .expect("dispatch");
+    }
+
+    fn revision(s: &Session) -> u64 {
+        s.current(&FixedClock(NOW)).revision
+    }
+
+    fn indent(id: &str) -> Command {
+        Command::Indent { id: id.into() }
+    }
+
+    fn shift(id: &str, delta: i32) -> Command {
+        Command::Shift {
+            id: id.into(),
+            delta,
+        }
+    }
+
+    #[test]
+    fn indent_tucks_a_task_under_the_nearest_visible_task_above() {
+        let mut s = session();
+        let ids = SeqIdSource::new();
+        let t = add_tasks(&mut s, &ids, &["a", "b", "hidden", "c"]);
+        let done = Command::SetDone {
+            id: t[2].clone(),
+            done: true,
+        };
+        run(&mut s, &ids, done);
+        s.set_view(ViewFilter::Active);
+
+        run(&mut s, &ids, indent(&t[1]));
+        // c skips both the hidden done task and the step b.
+        run(&mut s, &ids, indent(&t[3]));
+        assert_eq!(outline(&s), ["a", "  b", "  c"]);
+
+        let before = revision(&s);
+        // The first row, a step, and a task with steps all stay put.
+        run(&mut s, &ids, indent(&t[0]));
+        run(&mut s, &ids, indent(&t[1]));
+        let top = add_tasks(&mut s, &ids, &["top"]);
+        run(&mut s, &ids, indent(&t[0]));
+        assert_eq!(revision(&s), before + 1); // just the add
+        assert_eq!(outline(&s), ["top", "a", "  b", "  c"]);
+        run(&mut s, &ids, indent(&top[0]));
+        assert_eq!(revision(&s), before + 1);
+
+        let hidden = s.dispatch(indent(&t[2]), &FixedClock(NOW), &ids);
+        assert!(matches!(hidden, Err(CoreError::NotFound(_))));
+    }
+
+    #[test]
+    fn outdent_turns_a_step_back_into_a_task() {
+        let mut s = session();
+        let ids = SeqIdSource::new();
+        let t = add_tasks(&mut s, &ids, &["a", "b", "c"]);
+        run(&mut s, &ids, indent(&t[1]));
+        assert_eq!(outline(&s), ["a", "  b", "c"]);
+        run(&mut s, &ids, Command::Outdent { id: t[1].clone() });
+        assert_eq!(outline(&s), ["a", "b", "c"]);
+        let before = revision(&s);
+        run(&mut s, &ids, Command::Outdent { id: t[1].clone() });
+        assert_eq!(revision(&s), before);
+    }
+
+    #[test]
+    fn shift_moves_whole_tasks_and_steps_among_siblings() {
+        let mut s = session();
+        let ids = SeqIdSource::new();
+        let t = add_tasks(&mut s, &ids, &["a", "s1", "s2", "b", "c"]);
+        let (a, s1, s2, b, c) = (&t[0], &t[1], &t[2], &t[3], &t[4]);
+        run(&mut s, &ids, indent(s1));
+        run(&mut s, &ids, indent(s2));
+
+        run(&mut s, &ids, shift(b, -1));
+        assert_eq!(outline(&s), ["b", "a", "  s1", "  s2", "c"]);
+        run(&mut s, &ids, shift(b, 1));
+        assert_eq!(outline(&s), ["a", "  s1", "  s2", "b", "c"]);
+        run(&mut s, &ids, shift(a, 1));
+        assert_eq!(outline(&s), ["b", "a", "  s1", "  s2", "c"]);
+        run(&mut s, &ids, shift(a, -5));
+        assert_eq!(outline(&s), ["a", "  s1", "  s2", "b", "c"]);
+
+        run(&mut s, &ids, shift(s1, 1));
+        assert_eq!(outline(&s), ["a", "  s2", "  s1", "b", "c"]);
+        run(&mut s, &ids, shift(s1, -1));
+        assert_eq!(outline(&s), ["a", "  s1", "  s2", "b", "c"]);
+
+        let before = revision(&s);
+        run(&mut s, &ids, shift(c, 5));
+        run(&mut s, &ids, shift(s1, -1));
+        run(&mut s, &ids, shift(s2, 3));
+        assert_eq!(revision(&s), before);
     }
 }

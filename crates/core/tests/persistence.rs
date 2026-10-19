@@ -15,6 +15,7 @@ fn add(app: &App, title: &str) {
         after: None,
         due: None,
         list_id: None,
+        parent_id: None,
     })
     .unwrap();
 }

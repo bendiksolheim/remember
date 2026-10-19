@@ -33,8 +33,15 @@ public struct TaskListView: SwiftUI.View {
             }
             Section {
                 ForEach(model.snapshot?.rows ?? [], id: \.id) { row in
-                    NavigationLink(value: row.id) {
+                    // A context row is only a heading for its steps.
+                    if row.contextOnly {
                         TaskRowView(row: row)
+                            .deleteDisabled(true)
+                            .moveDisabled(true)
+                    } else {
+                        NavigationLink(value: row.id) {
+                            TaskRowView(row: row)
+                        }
                     }
                 }
                 .onDelete(perform: delete)
@@ -94,9 +101,9 @@ public struct TaskListView: SwiftUI.View {
 
     private func addTask() {
         if let detection = dueDetection, !dueDismissed {
-            model.dispatch(.add(title: detection.strippedTitle, after: nil, due: detection.due, listId: nil))
+            model.dispatch(.add(title: detection.strippedTitle, after: nil, due: detection.due, listId: nil, parentId: nil))
         } else {
-            model.dispatch(.add(title: newTitle, after: nil, due: nil, listId: nil))
+            model.dispatch(.add(title: newTitle, after: nil, due: nil, listId: nil, parentId: nil))
         }
         newTitle = ""
         dueDetection = nil
@@ -114,7 +121,8 @@ public struct TaskListView: SwiftUI.View {
     /// `Array.move(fromOffsets:toOffset:)`: a post-removal insertion index.
     /// No local reordered array is kept — this just resolves `destination`
     /// to the id it should land after and dispatches, same as every other
-    /// mutation here; the next snapshot redraws the list.
+    /// mutation here; the next snapshot redraws the list. remember-core
+    /// refuses a step dragged out of its task, so it springs back.
     private func move(from source: IndexSet, to destination: Int) {
         guard let rows = model.snapshot?.rows, let sourceIndex = source.first else { return }
         let movingID = rows[sourceIndex].id

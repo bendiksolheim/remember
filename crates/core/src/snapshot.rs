@@ -8,7 +8,10 @@ pub struct TaskRow {
     pub id: String,
     pub title: String,
     pub notes: String,
+    /// False while any of a task's steps is open, whatever is stored.
     pub done: bool,
+    /// The task's own due date, for editing. `due_label`/`due_state` are
+    /// for display and, for a task with steps, cover its open steps too.
     pub due: Option<i64>,
     pub due_label: Option<String>,
     pub due_state: DueState,
@@ -16,6 +19,14 @@ pub struct TaskRow {
     /// Denormalized from `lists` so Swift never has to join `list_id`
     /// against the roster itself.
     pub list_name: String,
+    /// The task this row is a step of; steps always follow their task.
+    pub parent_id: Option<String>,
+    /// All of a task's steps and the done ones, whatever the view shows.
+    pub step_count: u32,
+    pub steps_done: u32,
+    /// Shown only as the heading for its matching steps (e.g. an open task
+    /// in the Completed view); not to be toggled or edited.
+    pub context_only: bool,
 }
 
 /// A task's urgency relative to "today" — the same calendar-day comparison

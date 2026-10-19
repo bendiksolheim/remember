@@ -30,6 +30,7 @@ pub enum Command {
         after: Option<String>,
         due: Option<i64>,
         list_id: Option<String>,
+        parent_id: Option<String>,
     },
     SetTitle {
         id: String,
@@ -72,6 +73,20 @@ pub enum Command {
     MoveList {
         id: String,
         after: Option<String>,
+    },
+    SetParent {
+        id: String,
+        parent_id: Option<String>,
+    },
+    Indent {
+        id: String,
+    },
+    Outdent {
+        id: String,
+    },
+    Shift {
+        id: String,
+        delta: i32,
     },
     Undo,
     Redo,
@@ -132,6 +147,10 @@ pub struct TaskRow {
     pub due_state: DueState,
     pub list_id: String,
     pub list_name: String,
+    pub parent_id: Option<String>,
+    pub step_count: u32,
+    pub steps_done: u32,
+    pub context_only: bool,
 }
 
 /// Result of `App::detect_due` — see its own doc comment.

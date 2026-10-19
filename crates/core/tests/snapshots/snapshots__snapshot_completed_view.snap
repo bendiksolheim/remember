@@ -1,6 +1,5 @@
 ---
 source: crates/core/tests/snapshots.rs
-assertion_line: 178
 expression: "doc.read(ViewFilter::Completed, \"default\", &clock)"
 ---
 rows:
@@ -13,6 +12,10 @@ rows:
     due_state: Later
     list_id: default
     list_name: Tasks
+    parent_id: ~
+    step_count: 0
+    steps_done: 0
+    context_only: false
   - id: "4"
     title: Clean garage
     notes: ""
@@ -22,6 +25,10 @@ rows:
     due_state: None
     list_id: default
     list_name: Tasks
+    parent_id: ~
+    step_count: 0
+    steps_done: 0
+    context_only: false
 view: Completed
 current_list: default
 lists:

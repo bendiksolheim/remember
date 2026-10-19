@@ -30,18 +30,28 @@ public struct TaskRowView: SwiftUI.View {
                     .foregroundStyle(row.done ? Color.secondary : Color.accentColor)
             }
             .buttonStyle(.plain)
+            // A context row is only a heading for its steps.
+            .disabled(row.contextOnly)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.title)
                     .strikethrough(row.done)
                     .foregroundStyle(row.done ? .secondary : .primary)
-                if let label = row.dueLabel {
-                    DueChip(label: label, tint: dueChipColor(state: row.dueState, done: row.done))
+                HStack(spacing: 6) {
+                    if row.stepCount > 0 {
+                        Text("\(row.stepsDone)/\(row.stepCount)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    if let label = row.dueLabel {
+                        DueChip(label: label, tint: dueChipColor(state: row.dueState, done: row.done))
+                    }
                 }
             }
         }
+        .padding(.leading, row.parentId == nil ? 0 : 28)
         // Done rows recede further than just their secondary/strikethrough
         // text color, so they read as clearly separate from active tasks.
-        .opacity(row.done ? 0.55 : 1)
+        .opacity(row.contextOnly ? 0.4 : (row.done ? 0.55 : 1))
     }
 }

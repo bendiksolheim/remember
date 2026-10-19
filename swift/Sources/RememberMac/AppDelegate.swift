@@ -98,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
 
     private func hide() {
         panel.orderOut(nil)
+        NotificationCenter.default.post(name: .rememberCapturePanelDidHide, object: nil)
     }
 
     func spotlightPanelDidResignKey(_ panel: SpotlightPanel) {

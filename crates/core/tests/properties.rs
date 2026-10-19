@@ -65,6 +65,14 @@ enum Op {
     Delete {
         target_seed: u8,
     },
+    AddStep {
+        title: String,
+        parent_seed: u8,
+    },
+    SetParent {
+        target_seed: u8,
+        parent_seed: Option<u8>,
+    },
 }
 
 fn arb_op() -> impl Strategy<Value = Op> {
@@ -89,6 +97,14 @@ fn arb_op() -> impl Strategy<Value = Op> {
             }
         }),
         any::<u8>().prop_map(|target_seed| Op::Delete { target_seed }),
+        ("[a-zA-Z ]{0,8}", any::<u8>())
+            .prop_map(|(title, parent_seed)| Op::AddStep { title, parent_seed }),
+        (any::<u8>(), proptest::option::of(any::<u8>())).prop_map(|(target_seed, parent_seed)| {
+            Op::SetParent {
+                target_seed,
+                parent_seed,
+            }
+        }),
     ]
 }
 
@@ -124,6 +140,7 @@ fn replay_one(
                     after,
                     due: None,
                     list_id: None,
+                    parent_id: None,
                 },
                 clock,
                 ids_src,
@@ -186,15 +203,52 @@ fn replay_one(
         } => resolve_target(known, *target_seed)
             .map(|id| {
                 let after = after_seed.and_then(|s| resolve_target(known, s));
-                doc.apply(Command::Move { id, after }, clock, ids_src)
-                    .unwrap();
+                // May be rejected: a step can only move among its siblings.
+                let _ = doc.apply(Command::Move { id, after }, clock, ids_src);
             })
             .is_some(),
         Op::Delete { target_seed } => resolve_target(known, *target_seed)
             .map(|id| {
-                doc.apply(Command::Delete { id: id.clone() }, clock, ids_src)
-                    .unwrap();
-                known.retain(|x| x != &id);
+                doc.apply(Command::Delete { id }, clock, ids_src).unwrap();
+                // Deleting a task takes its steps with it.
+                let snap = doc.read(ViewFilter::All, "default", clock);
+                known.retain(|x| snap.rows.iter().any(|r| &r.id == x));
+            })
+            .is_some(),
+        Op::AddStep { title, parent_seed } => resolve_target(known, *parent_seed)
+            .map(|parent_id| {
+                let before: HashSet<String> = known.iter().cloned().collect();
+                doc.apply(
+                    Command::Add {
+                        title: title.clone(),
+                        after: None,
+                        due: None,
+                        list_id: None,
+                        parent_id: Some(parent_id),
+                    },
+                    clock,
+                    ids_src,
+                )
+                .unwrap();
+                let snap = doc.read(ViewFilter::All, "default", clock);
+                if let Some(new_id) = snap
+                    .rows
+                    .iter()
+                    .map(|r| r.id.clone())
+                    .find(|id| !before.contains(id))
+                {
+                    known.push(new_id);
+                }
+            })
+            .is_some(),
+        Op::SetParent {
+            target_seed,
+            parent_seed,
+        } => resolve_target(known, *target_seed)
+            .map(|id| {
+                let parent_id = parent_seed.and_then(|s| resolve_target(known, s));
+                // May be rejected, e.g. when `id` has steps of its own.
+                let _ = doc.apply(Command::SetParent { id, parent_id }, clock, ids_src);
             })
             .is_some(),
     }
@@ -224,13 +278,15 @@ fn arb_raw_command() -> impl Strategy<Value = Command> {
             ".*",
             proptest::option::of(id),
             proptest::option::of(any::<i64>()),
+            proptest::option::of(id),
             proptest::option::of(id)
         )
-            .prop_map(|(title, after, due, list_id)| Command::Add {
+            .prop_map(|(title, after, due, list_id, parent_id)| Command::Add {
                 title,
                 after,
                 due,
-                list_id
+                list_id,
+                parent_id
             }),
         (id, ".*").prop_map(|(id, title)| Command::SetTitle { id, title }),
         (id, ".*").prop_map(|(id, notes)| Command::SetNotes { id, notes }),
@@ -243,6 +299,11 @@ fn arb_raw_command() -> impl Strategy<Value = Command> {
         (id, ".*").prop_map(|(id, name)| Command::RenameList { id, name }),
         id.prop_map(|id| Command::DeleteList { id }),
         (id, proptest::option::of(id)).prop_map(|(id, after)| Command::MoveList { id, after }),
+        (id, proptest::option::of(id))
+            .prop_map(|(id, parent_id)| Command::SetParent { id, parent_id }),
+        id.prop_map(|id| Command::Indent { id }),
+        id.prop_map(|id| Command::Outdent { id }),
+        (id, any::<i32>()).prop_map(|(id, delta)| Command::Shift { id, delta }),
         Just(Command::Undo),
         Just(Command::Redo),
     ]

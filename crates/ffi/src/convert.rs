@@ -13,11 +13,13 @@ pub fn command_to_core(command: Command) -> remember_core::Command {
             after,
             due,
             list_id,
+            parent_id,
         } => remember_core::Command::Add {
             title,
             after,
             due,
             list_id,
+            parent_id,
         },
         Command::SetTitle { id, title } => remember_core::Command::SetTitle { id, title },
         Command::SetNotes { id, notes } => remember_core::Command::SetNotes { id, notes },
@@ -30,6 +32,10 @@ pub fn command_to_core(command: Command) -> remember_core::Command {
         Command::RenameList { id, name } => remember_core::Command::RenameList { id, name },
         Command::DeleteList { id } => remember_core::Command::DeleteList { id },
         Command::MoveList { id, after } => remember_core::Command::MoveList { id, after },
+        Command::SetParent { id, parent_id } => remember_core::Command::SetParent { id, parent_id },
+        Command::Indent { id } => remember_core::Command::Indent { id },
+        Command::Outdent { id } => remember_core::Command::Outdent { id },
+        Command::Shift { id, delta } => remember_core::Command::Shift { id, delta },
         Command::Undo => remember_core::Command::Undo,
         Command::Redo => remember_core::Command::Redo,
     }
@@ -94,6 +100,10 @@ pub fn task_row_from_core(row: &remember_core::TaskRow) -> TaskRow {
         due_state: due_state_from_core(row.due_state),
         list_id: row.list_id.clone(),
         list_name: row.list_name.clone(),
+        parent_id: row.parent_id.clone(),
+        step_count: row.step_count,
+        steps_done: row.steps_done,
+        context_only: row.context_only,
     }
 }
 
@@ -175,8 +185,9 @@ mod tests {
                 after: None,
                 due: Some(7),
                 list_id: None,
+                parent_id: None,
             }),
-            remember_core::Command::Add { title, after: None, due: Some(7), list_id: None } if title == "t"
+            remember_core::Command::Add { title, after: None, due: Some(7), list_id: None, parent_id: None } if title == "t"
         ));
         assert!(matches!(
             command_to_core(Command::Add {
@@ -184,8 +195,9 @@ mod tests {
                 after: Some("x".to_string()),
                 due: None,
                 list_id: Some("l".to_string()),
+                parent_id: Some("p".to_string()),
             }),
-            remember_core::Command::Add { after: Some(a), list_id: Some(l), .. } if a == "x" && l == "l"
+            remember_core::Command::Add { after: Some(a), list_id: Some(l), parent_id: Some(p), .. } if a == "x" && l == "l" && p == "p"
         ));
         assert!(matches!(
             command_to_core(Command::SetTitle {
@@ -275,6 +287,32 @@ mod tests {
                 after: None
             }),
             remember_core::Command::MoveList { after: None, .. }
+        ));
+        assert!(matches!(
+            command_to_core(Command::SetParent {
+                id: "i".to_string(),
+                parent_id: Some("p".to_string())
+            }),
+            remember_core::Command::SetParent { id, parent_id: Some(p) } if id == "i" && p == "p"
+        ));
+        assert!(matches!(
+            command_to_core(Command::Indent {
+                id: "i".to_string()
+            }),
+            remember_core::Command::Indent { id } if id == "i"
+        ));
+        assert!(matches!(
+            command_to_core(Command::Outdent {
+                id: "i".to_string()
+            }),
+            remember_core::Command::Outdent { id } if id == "i"
+        ));
+        assert!(matches!(
+            command_to_core(Command::Shift {
+                id: "i".to_string(),
+                delta: -2
+            }),
+            remember_core::Command::Shift { id, delta: -2 } if id == "i"
         ));
         assert!(matches!(
             command_to_core(Command::Undo),
@@ -367,6 +405,10 @@ mod tests {
             due_state,
             list_id: "l".to_string(),
             list_name: "List".to_string(),
+            parent_id: Some("p".to_string()),
+            step_count: 3,
+            steps_done: 1,
+            context_only: true,
         }
     }
 
@@ -386,6 +428,9 @@ mod tests {
         assert_eq!(row.due_state, DueState::Overdue);
         assert_eq!(row.list_id, "l");
         assert_eq!(row.list_name, "List");
+        assert_eq!(row.parent_id.as_deref(), Some("p"));
+        assert_eq!((row.step_count, row.steps_done), (3, 1));
+        assert!(row.context_only);
     }
 
     #[test]

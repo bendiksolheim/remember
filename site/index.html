@@ -122,6 +122,15 @@
     }
     .chip svg { width: 12px; height: 12px; }
     button.chip { border: 0; font-family: inherit; cursor: pointer; }
+    /* CaptureParentChip: the task new captures go into as steps. */
+    .target {
+      display: inline-flex; align-items: center; gap: 2px; flex: none; max-width: 220px;
+      padding: 4px 8px; border: 0; border-radius: 999px; cursor: pointer;
+      font-family: inherit; font-size: 13px; font-weight: 500;
+      color: var(--accent); background: color-mix(in srgb, var(--accent) 20%, transparent);
+    }
+    .target .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .target svg { width: 10px; height: 10px; flex: none; }
 
     .pills { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 20px; }
     .pill {
@@ -147,6 +156,8 @@
     .row.completed .check { color: var(--secondary); }
     .row .check svg { width: 16px; height: 16px; }
     .row .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .row.step { padding-left: 46px; }
+    .row .progress { flex: none; font-size: 11px; color: var(--secondary); font-variant-numeric: tabular-nums; }
     .row input {
       flex: 1; min-width: 0; border: 0; outline: none; background: none; padding: 0;
       color: var(--text); font: inherit;
@@ -168,6 +179,7 @@
       <p class="stage-label">This is the real thing, running in your browser. Start typing.</p>
       <div class="panel glass">
         <div class="capture">
+          <span id="target"></span>
           <input id="input" type="text" placeholder="Add a task…" aria-label="Add a task" autocomplete="off" spellcheck="false">
           <span id="badge"></span>
         </div>
@@ -213,6 +225,8 @@
           <dt><kbd>↓</kbd> <kbd>↑</kbd></dt><dd>Move between tasks</dd>
           <dt><kbd>Space</kbd></dt><dd>Complete a task</dd>
           <dt><kbd>E</kbd></dt><dd>Rename it</dd>
+          <dt><kbd>A</kbd></dt><dd>Add steps to it</dd>
+          <dt><kbd>Tab</kbd></dt><dd>Make it a step of the task above</dd>
           <dt><kbd>⌘</kbd> <kbd>1</kbd>–<kbd>9</kbd></dt><dd>Switch list</dd>
           <dt><kbd>⌘</kbd> <kbd>Z</kbd></dt><dd>Undo anything</dd>
         </dl>

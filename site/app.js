@@ -6,7 +6,8 @@ import init, { Remember } from "./pkg/remember_web.js";
 
 // Sample data, replayed through the core on every visit. Nothing is saved,
 // so every visitor starts from the same place. Top to bottom as shown; due
-// phrases at the end of a title go through the same detection as typing.
+// phrases at the end of a title go through the same detection as typing. A
+// task is a title, or `{ title, steps }` for one with steps.
 // The first list doubles as the tutorial: the panel has no visible help.
 const SEED = [
   {
@@ -17,6 +18,14 @@ const SEED = [
       "Press E to rename the focused task",
       "Move the focused task with ⌥⇧J and ⌥⇧K",
       "⌘Z undoes anything, ⇧⌘Z redoes",
+      {
+        title: "Group tasks into steps",
+        steps: [
+          "Press A on a task to add steps to it",
+          "Tab tucks a task under the one above",
+          "⇧Tab pulls a step back out",
+        ],
+      },
       "Water the plants today",
       "Book dentist appointment friday",
     ],
@@ -34,9 +43,16 @@ const GHOST_MS = 1000;
 const $ = (id) => document.getElementById(id);
 const offsetSeconds = -new Date().getTimezoneOffset() * 60;
 
-function addCommand(engine, text) {
+function addCommand(engine, text, parentId = null) {
   const d = engine.detect_due(text);
-  return { type: "Add", title: d ? d.stripped_title : text, after: null, due: d ? d.due : null, list_id: null };
+  return {
+    type: "Add",
+    title: d ? d.stripped_title : text,
+    after: null,
+    due: d ? d.due : null,
+    list_id: null,
+    parent_id: parentId,
+  };
 }
 
 function seeded() {
@@ -50,7 +66,13 @@ function seeded() {
     }
     engine.set_current_list(byName(list).id);
     // `after: null` inserts at the top, so add bottom-up.
-    [...tasks].reverse().forEach((title) => engine.dispatch(addCommand(engine, title)));
+    [...tasks].reverse().forEach((task) => {
+      const { title, steps = [] } = typeof task === "string" ? { title: task } : task;
+      engine.dispatch(addCommand(engine, title));
+      // The task just added is the top row; steps append in order.
+      const parentId = engine.snapshot().rows[0].id;
+      steps.forEach((step) => engine.dispatch(addCommand(engine, step, parentId)));
+    });
   });
   // Reopen from the bytes so the seeding isn't on the undo stack, and so
   // the visitor lands on the first list.
@@ -82,17 +104,21 @@ let editText = "";
 let detection = null;
 /** Set when the badge is clicked; cleared on the next keystroke. */
 let dueDismissed = false;
+/** Id of the task captures go into as steps (CaptureView's `addTargetID`), or null. */
+let addTarget = null;
 /**
  * Rows just checked off, kept on screen for GHOST_MS in their old spot:
- * id → { row, anchor, timer }, where `anchor` is the id of the active row
- * the ghost followed when completed, or "" if it was first.
+ * id → { row, anchor, timer, block }, where `anchor` is the id of the row
+ * the ghost followed, or "" if it was first, and `block` (on a task) the
+ * steps completed with it.
  */
 const ghosts = new Map();
 
-/** Active rows in order, each ghost reinserted right after its anchor. */
+/** Active rows in order, each ghost (recursively) reinserted after its anchor. */
 function displayRows(s) {
   const ghostEntries = [...ghosts.values()].map((g) => ({ anchor: g.anchor, row: g.row, completed: true }));
-  const anchoredTo = (anchor) => ghostEntries.filter((g) => g.anchor === anchor);
+  const anchoredTo = (anchor) =>
+    ghostEntries.filter((g) => g.anchor === anchor).flatMap((g) => [g, ...anchoredTo(g.row.id)]);
   const anchored = [
     ...anchoredTo(""),
     ...s.rows
@@ -118,34 +144,72 @@ function moveFocus(delta) {
   render();
 }
 
-/** ⌥⇧J/⌥⇧K: swap the focused row with its active neighbour; clamps at the ends. */
+/** ⌥⇧J/⌥⇧K: the core's `Shift` moves the row among its peers, clamped. */
 function moveFocusedRow(delta) {
-  if (focus.type !== "row") return;
-  const rows = app.snapshot().rows;
-  const i = rows.findIndex((r) => r.id === focus.id);
-  const n = i + delta;
-  if (i < 0 || n < 0 || n >= rows.length) return;
-  const after = delta > 0 ? rows[n].id : n > 0 ? rows[n - 1].id : null;
-  dispatch({ type: "Move", id: focus.id, after });
+  if (focus.type !== "row" || !isLive(focus.id)) return;
+  dispatch({ type: "Shift", id: focus.id, delta });
   render();
+}
+
+/** Tab / ⇧Tab: tuck the focused row under the task above, or pull a step back out. */
+function indentFocusedRow(outdent) {
+  if (focus.type !== "row" || !isLive(focus.id)) return;
+  dispatch({ type: outdent ? "Outdent" : "Indent", id: focus.id });
+  render();
+}
+
+/** Whether `id` is a live row, not a ghost only this view still shows. */
+function isLive(id) {
+  return !ghosts.has(id) && app.snapshot().rows.some((r) => r.id === id);
+}
+
+/** "a": aim the input at the focused row's task. */
+function targetFocused() {
+  if (focus.type !== "row" || !isLive(focus.id)) return;
+  const row = app.snapshot().rows.find((r) => r.id === focus.id);
+  addTarget = row.parent_id ?? row.id;
+  focus = { type: "input" };
+  render();
+}
+
+/** The row at `i` plus, for a task, its steps shown below it. */
+function blockAt(rows, i) {
+  const block = [rows[i]];
+  if (rows[i].parent_id) return block;
+  for (let j = i + 1; j < rows.length && rows[j].parent_id === rows[i].id; j++) block.push(rows[j]);
+  return block;
 }
 
 function toggle(id) {
   focus = { type: "row", id };
   const ghost = ghosts.get(id);
+  const drop = (ghostId) => {
+    clearTimeout(ghosts.get(ghostId)?.timer);
+    ghosts.delete(ghostId);
+  };
   if (ghost) {
-    clearTimeout(ghost.timer);
-    ghosts.delete(id);
-    dispatch({ type: "SetDone", id, done: false });
+    // A block completed together comes back together.
+    for (const ghostId of [id, ...(ghost.block ?? [])]) {
+      if (!ghosts.has(ghostId)) continue;
+      drop(ghostId);
+      dispatch({ type: "SetDone", id: ghostId, done: false });
+    }
+    // Reopening a step reopens its task.
+    if (ghost.row.parent_id) drop(ghost.row.parent_id);
   } else {
     const rows = app.snapshot().rows;
     const i = rows.findIndex((r) => r.id === id);
     if (i < 0) return;
+    // Its open steps are completed (and ghosted) with it.
     dispatch({ type: "SetDone", id, done: true });
-    ghosts.set(id, {
-      row: rows[i],
-      anchor: i > 0 ? rows[i - 1].id : "",
-      timer: setTimeout(() => removeGhost(id), GHOST_MS),
+    const block = blockAt(rows, i);
+    block.forEach((row, k) => {
+      ghosts.set(row.id, {
+        row,
+        anchor: i + k > 0 ? rows[i + k - 1].id : "",
+        timer: setTimeout(() => removeGhost(row.id), GHOST_MS),
+        block: k === 0 && block.length > 1 ? block.slice(1).map((r) => r.id) : undefined,
+      });
     });
   }
   render();
@@ -182,6 +246,7 @@ function endEdit(commit) {
 
 function selectList(id) {
   app.set_current_list(id);
+  addTarget = null;
   focus = { type: "input" };
   render();
 }
@@ -191,6 +256,7 @@ function selectList(id) {
 const ICONS = {
   circle: `<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>`,
   checked: `<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7.65" fill="currentColor"/><path d="M4.9 8.3l2.1 2.2 4.2-4.7" fill="none" stroke="#2a2a2e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  chevron: `<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M3.5 1.5L7 5 3.5 8.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   calendar: `<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="2.75" width="12.5" height="11.5" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2 6.25h12" stroke="currentColor" stroke-width="1.3"/><path d="M5 1.5v2.5M11 1.5v2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`,
 };
 
@@ -240,6 +306,27 @@ function render() {
     focus = { type: "input" };
   }
 
+  // The target is gone (completed, deleted, undone).
+  const target = s.rows.find((r) => r.id === addTarget);
+  if (!target) addTarget = null;
+  $("target").replaceChildren();
+  if (target) {
+    const el = unfocusable(document.createElement("button"));
+    el.className = "target";
+    el.title = "Add tasks instead of steps";
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = target.title;
+    el.append(name);
+    el.insertAdjacentHTML("beforeend", ICONS.chevron);
+    el.onclick = () => {
+      addTarget = null;
+      render();
+    };
+    $("target").append(el);
+  }
+  input.placeholder = target ? "Add a step…" : "Add a task…";
+
   $("badge").replaceChildren();
   if (detection && !dueDismissed) {
     const badge = unfocusable(chip(detection.label, "var(--accent)", "button"));
@@ -273,6 +360,7 @@ function render() {
     el.className = "row";
     el.tabIndex = -1;
     if (completed) el.classList.add("completed");
+    if (row.parent_id) el.classList.add("step");
     const focused = focus.type === "row" && focus.id === row.id;
     const editing = focus.type === "edit" && focus.id === row.id;
     if (focused) {
@@ -307,6 +395,12 @@ function render() {
       title.className = "title";
       title.textContent = row.title;
       el.append(title);
+      if (row.step_count > 0) {
+        const progress = document.createElement("span");
+        progress.className = "progress";
+        progress.textContent = `${row.steps_done}/${row.step_count}`;
+        el.append(progress);
+      }
       if (row.due_label) el.append(chip(row.due_label, dueTint(row.due_state, completed)));
     }
 
@@ -352,13 +446,21 @@ input.addEventListener("input", () => {
 });
 
 input.addEventListener("keydown", (e) => {
+  // Backspace in the empty input drops the step target.
+  if (e.key === "Backspace" && !input.value && addTarget) {
+    e.preventDefault();
+    addTarget = null;
+    render();
+    return;
+  }
   if (e.key !== "Enter" || e.isComposing) return;
   e.preventDefault();
   if (!input.value.trim()) return;
+  const step = { list_id: null, parent_id: addTarget };
   if (detection && !dueDismissed) {
-    dispatch({ type: "Add", title: detection.stripped_title, after: null, due: detection.due, list_id: null });
+    dispatch({ type: "Add", title: detection.stripped_title, after: null, due: detection.due, ...step });
   } else {
-    dispatch({ type: "Add", title: input.value, after: null, due: null, list_id: null });
+    dispatch({ type: "Add", title: input.value, after: null, due: null, ...step });
   }
   input.value = "";
   detection = null;
@@ -378,6 +480,8 @@ const NO_MODIFIERS = (e) => !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
 
 // Matched on `e.code`: on a Mac, ⌥J types "∆", so `e.key` is useless here.
 document.addEventListener("keydown", (e) => {
+  // E.g. Escape ending a rename must not also drop the step target.
+  if (e.defaultPrevented) return;
   const editing = focus.type === "edit";
   const command = e.metaKey || e.ctrlKey;
 
@@ -414,7 +518,23 @@ document.addEventListener("keydown", (e) => {
 
   // Once the visitor clicks away from the panel, plain keys belong to the
   // page again (arrows and Space scroll it).
-  if (!NO_MODIFIERS(e) || editing || focus.type === "none") return;
+  if (editing || focus.type === "none") return;
+
+  // Tab / ⇧Tab indent and outdent the focused row (swallowed in the input).
+  if (e.code === "Tab" && !command && !e.altKey) {
+    e.preventDefault();
+    indentFocusedRow(e.shiftKey);
+    return;
+  }
+  // As on the Mac, Escape drops the step target.
+  if (e.code === "Escape" && addTarget) {
+    e.preventDefault();
+    addTarget = null;
+    render();
+    return;
+  }
+
+  if (!NO_MODIFIERS(e)) return;
   if (e.code === "ArrowDown" || e.code === "ArrowUp") {
     e.preventDefault();
     moveFocus(e.code === "ArrowDown" ? 1 : -1);
@@ -424,6 +544,9 @@ document.addEventListener("keydown", (e) => {
   } else if (focus.type === "row" && e.code === "KeyE") {
     e.preventDefault();
     beginEdit();
+  } else if (focus.type === "row" && e.code === "KeyA") {
+    e.preventDefault();
+    targetFocused();
   }
 });
 

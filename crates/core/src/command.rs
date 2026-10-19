@@ -12,6 +12,10 @@ pub enum Command {
         after: Option<String>,
         due: Option<i64>,
         list_id: Option<String>,
+        /// Adds a last step to this task (or to this step's task); `after`
+        /// and `list_id` are then ignored.
+        #[serde(default)]
+        parent_id: Option<String>,
     },
     SetTitle {
         id: String,
@@ -60,6 +64,29 @@ pub enum Command {
         id: String,
         after: Option<String>,
     },
+    /// Makes `id` the last step of `parent_id`, or with `None` a top-level
+    /// task right below its former task. Rejected across lists, under a
+    /// step, or when `id` has steps.
+    SetParent {
+        id: String,
+        parent_id: Option<String>,
+    },
+    /// Tab: makes `id` the last step of the nearest top-level task above it
+    /// in the current view. `Indent`, `Outdent` and `Shift` are resolved by
+    /// `crate::Session` against what's shown and never reach `Doc`.
+    Indent {
+        id: String,
+    },
+    /// ⇧Tab: a step becomes a top-level task right below its former task.
+    Outdent {
+        id: String,
+    },
+    /// Moves `id` by `delta` places among its peers in the current view,
+    /// clamped: a step among its siblings, a task past whole tasks.
+    Shift {
+        id: String,
+        delta: i32,
+    },
     Undo,
     Redo,
 }
@@ -91,6 +118,31 @@ mod tests {
                 after: None,
                 due: Some(5),
                 list_id: None,
+                parent_id: None,
+            }
+        );
+        let step: Command = serde_json::from_str(
+            r#"{"type":"Add","title":"Milk","after":null,"due":null,"list_id":null,"parent_id":"p"}"#,
+        )
+        .expect("add step");
+        assert!(matches!(step, Command::Add { parent_id: Some(p), .. } if p == "p"));
+        let shift: Command =
+            serde_json::from_str(r#"{"type":"Shift","id":"a","delta":-1}"#).expect("shift");
+        assert_eq!(
+            shift,
+            Command::Shift {
+                id: "a".into(),
+                delta: -1
+            }
+        );
+        let outdent: Command =
+            serde_json::from_str(r#"{"type":"SetParent","id":"a","parent_id":null}"#)
+                .expect("set parent");
+        assert_eq!(
+            outdent,
+            Command::SetParent {
+                id: "a".into(),
+                parent_id: None
             }
         );
         let undo: Command = serde_json::from_str(r#"{"type":"Undo"}"#).expect("undo");
