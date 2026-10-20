@@ -1,6 +1,6 @@
 cask "remember" do
-  version "6"
-  sha256 "a6790f53566fe1152660044f0cf6ec2185e0a8243e48c3c0a213ef00be9ae2e3"
+  version "7"
+  sha256 "7a1d4eff3810673ee102c6bec26058b01e01a08c3c0ab2286a83821f5cd29960"
 
   url "https://github.com/bendiksolheim/remember/releases/download/v#{version}/Remember-#{version}-macos-arm64.zip"
   name "Remember"
