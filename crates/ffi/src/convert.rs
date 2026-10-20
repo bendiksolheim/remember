@@ -160,6 +160,7 @@ pub fn sync_outcome_from_core(outcome: remember_sync::SyncOutcome) -> SyncOutcom
     SyncOutcome {
         pulled: outcome.pulled as u64,
         pushed_bytes: outcome.pushed_bytes as u64,
+        missing_changes: outcome.missing_changes,
     }
 }
 
@@ -578,9 +579,11 @@ mod tests {
         let outcome = sync_outcome_from_core(remember_sync::SyncOutcome {
             pulled: 3,
             pushed_bytes: 128,
+            missing_changes: true,
         });
         assert_eq!(outcome.pulled, 3);
         assert_eq!(outcome.pushed_bytes, 128);
+        assert!(outcome.missing_changes);
     }
 
     #[test]

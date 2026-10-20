@@ -47,6 +47,15 @@ impl Shared {
     }
 }
 
+/// One push's worth of changes from [`App::export_for_push`]: the bytes to
+/// send, and the version they bring the server up to, for
+/// [`App::mark_pushed`].
+#[derive(Debug, Clone)]
+pub struct PushBatch {
+    pub bytes: Vec<u8>,
+    version: Vec<u8>,
+}
+
 /// Ties [`Doc`] and [`Store`] together: loads or creates the document on
 /// open, debounces writes to disk, and flushes explicitly or on drop.
 pub struct App {
@@ -62,6 +71,7 @@ impl App {
             Some(bytes) => Doc::load(peer_id, &bytes)?,
             None => Doc::new(peer_id)?,
         };
+        store.repush_own_history_once(&doc.version_vector_without_own_bytes())?;
         let current_list = store.load_current_list()?;
 
         let shared = Arc::new(Shared {
@@ -251,11 +261,16 @@ impl App {
     /// push). Does not itself advance the pushed cursor — call
     /// [`App::mark_pushed`] once the caller has confirmed the server
     /// accepted these bytes, so a failed push is safely retried as-is.
-    pub fn export_for_push(&self) -> Result<Vec<u8>, CoreError> {
+    pub fn export_for_push(&self) -> Result<PushBatch, CoreError> {
         let since = self.shared.store.load_pushed_vv()?;
-        lock(&self.shared.state)
-            .doc()
-            .export_since(since.as_deref())
+        // One lock for both, so no edit can land between the export and
+        // the version it's recorded as covering.
+        let state = lock(&self.shared.state);
+        let bytes = state.doc().export_since(since.as_deref())?;
+        Ok(PushBatch {
+            bytes,
+            version: state.doc().version_vector_bytes(),
+        })
     }
 
     /// The full document — current state plus its whole history — for the
@@ -267,12 +282,12 @@ impl App {
         lock(&self.shared.state).doc().export_snapshot()
     }
 
-    /// Records the current version vector as "already pushed". Call only
-    /// after the sync transport confirms the bytes from
-    /// [`App::export_for_push`] were accepted.
-    pub fn mark_pushed(&self) -> Result<(), CoreError> {
-        let vv = lock(&self.shared.state).doc().version_vector_bytes();
-        self.shared.store.save_pushed_vv(&vv)
+    /// Records `batch` as "already pushed". Call only after the sync
+    /// transport confirms its bytes were accepted. Records the version the
+    /// batch was exported at, not the current one: an edit made while the
+    /// push was in flight isn't in it, and must go in the next push.
+    pub fn mark_pushed(&self, batch: &PushBatch) -> Result<(), CoreError> {
+        self.shared.store.save_pushed_vv(&batch.version)
     }
 
     /// Merges bytes pulled from sync into this doc, then flushes and
@@ -283,6 +298,13 @@ impl App {
         *lock(&self.shared.dirty_since) = Some(Instant::now());
         self.notify();
         Ok(())
+    }
+
+    /// Whether pulled changes are being held back because they build on
+    /// changes this device has never received — see
+    /// [`crate::Doc::has_missing_changes`].
+    pub fn has_missing_changes(&self) -> bool {
+        lock(&self.shared.state).doc().has_missing_changes()
     }
 
     /// The server log cursor as of the last successful pull. `None` means

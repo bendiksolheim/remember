@@ -103,7 +103,8 @@ fn has_unpushed_changes_is_true_after_an_edit_and_false_after_mark_pushed() {
     add(&app, "a");
     assert!(app.has_unpushed_changes().unwrap());
 
-    app.mark_pushed().unwrap();
+    let batch = app.export_for_push().unwrap();
+    app.mark_pushed(&batch).unwrap();
     assert!(!app.has_unpushed_changes().unwrap());
 }
 
@@ -114,14 +115,14 @@ fn export_for_push_is_empty_delta_immediately_after_mark_pushed() {
     add(&app, "a");
 
     let first = app.export_for_push().unwrap();
-    assert!(!first.is_empty());
-    app.mark_pushed().unwrap();
+    assert!(!first.bytes.is_empty());
+    app.mark_pushed(&first).unwrap();
 
     // Nothing changed locally since mark_pushed — re-exporting must not
     // resend "a" again.
     let second = app.export_for_push().unwrap();
     let other = App::open(&db_path(&dir, "other.sqlite3")).unwrap();
-    other.import_from_pull(&second).unwrap();
+    other.import_from_pull(&second.bytes).unwrap();
     assert_eq!(other.current().rows.len(), 0);
 }
 
@@ -136,11 +137,11 @@ fn failed_push_can_be_retried_by_re_exporting_without_mark_pushed() {
     let attempt2 = app.export_for_push().unwrap();
 
     let receiver = App::open(&db_path(&dir, "receiver.sqlite3")).unwrap();
-    receiver.import_from_pull(&attempt1).unwrap();
+    receiver.import_from_pull(&attempt1.bytes).unwrap();
     assert_eq!(receiver.current().rows.len(), 1);
 
     let receiver2 = App::open(&db_path(&dir, "receiver2.sqlite3")).unwrap();
-    receiver2.import_from_pull(&attempt2).unwrap();
+    receiver2.import_from_pull(&attempt2.bytes).unwrap();
     assert_eq!(receiver2.current().rows.len(), 1);
 }
 
@@ -149,7 +150,7 @@ fn import_from_pull_updates_current_snapshot_and_notifies_subscribers() {
     let dir = TempDir::new().unwrap();
     let sender = App::open(&db_path(&dir, "sender.sqlite3")).unwrap();
     add(&sender, "from sender");
-    let bytes = sender.export_for_push().unwrap();
+    let bytes = sender.export_for_push().unwrap().bytes;
 
     let receiver = App::open(&db_path(&dir, "receiver.sqlite3")).unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -177,12 +178,12 @@ fn two_devices_converge_via_manual_push_pull_cycle() {
     add(&device_b, "from b");
 
     let from_a = device_a.export_for_push().unwrap();
-    device_a.mark_pushed().unwrap();
+    device_a.mark_pushed(&from_a).unwrap();
     let from_b = device_b.export_for_push().unwrap();
-    device_b.mark_pushed().unwrap();
+    device_b.mark_pushed(&from_b).unwrap();
 
-    device_a.import_from_pull(&from_b).unwrap();
-    device_b.import_from_pull(&from_a).unwrap();
+    device_a.import_from_pull(&from_b.bytes).unwrap();
+    device_b.import_from_pull(&from_a.bytes).unwrap();
 
     let titles_a: Vec<_> = device_a
         .current()
@@ -253,7 +254,7 @@ fn binding_a_different_sync_account_resets_local_state() {
         .id;
     app.set_current_list(a_list.clone()).unwrap();
     app.mark_pulled(7).unwrap();
-    app.mark_pushed().unwrap();
+    app.mark_pushed(&app.export_for_push().unwrap()).unwrap();
     app.mark_synced().unwrap();
     let a_peer = app.peer_id();
     let due_before = app.detect_due("x today").unwrap().due;
@@ -361,7 +362,7 @@ fn a_compaction_snapshot_merges_into_a_device_with_history_and_edits_of_its_own(
     let lagging = App::open(&db_path(&dir, "lagging.sqlite3")).unwrap();
     add(&source, "shared");
     lagging
-        .import_from_pull(&source.export_for_push().unwrap())
+        .import_from_pull(&source.export_for_push().unwrap().bytes)
         .unwrap();
     add(&source, "only in snapshot");
     add(&lagging, "only on lagging device");
@@ -381,4 +382,155 @@ fn a_compaction_snapshot_merges_into_a_device_with_history_and_edits_of_its_own(
     // The lagging device's own edit survives the import and is still
     // pending, so the next round pushes it.
     assert!(lagging.has_unpushed_changes().unwrap());
+}
+
+#[test]
+fn an_edit_made_while_a_push_is_in_flight_goes_in_the_next_push() {
+    let dir = TempDir::new().unwrap();
+    let sender = App::open(&db_path(&dir, "sender.sqlite3")).unwrap();
+    let receiver = App::open(&db_path(&dir, "receiver.sqlite3")).unwrap();
+
+    add(&sender, "one");
+    let first = sender.export_for_push().unwrap();
+    add(&sender, "two"); // while `first` is still on its way to the server
+    sender.mark_pushed(&first).unwrap();
+    receiver.import_from_pull(&first.bytes).unwrap();
+
+    assert!(sender.has_unpushed_changes().unwrap());
+    add(&sender, "three");
+    receiver
+        .import_from_pull(&sender.export_for_push().unwrap().bytes)
+        .unwrap();
+
+    assert_eq!(titles(&receiver), vec!["one", "three", "two"]);
+    assert!(!receiver.has_missing_changes());
+}
+
+#[test]
+fn changes_that_build_on_missing_ones_are_reported_until_the_gap_is_filled() {
+    let dir = TempDir::new().unwrap();
+    let sender = App::open(&db_path(&dir, "sender.sqlite3")).unwrap();
+    let receiver = App::open(&db_path(&dir, "receiver.sqlite3")).unwrap();
+    add(&sender, "one");
+    let first = sender.export_for_push().unwrap();
+    sender.mark_pushed(&first).unwrap();
+    receiver.import_from_pull(&first.bytes).unwrap();
+    assert!(!receiver.has_missing_changes());
+
+    add(&sender, "lost");
+    let lost = sender.export_for_push().unwrap();
+    sender.mark_pushed(&lost).unwrap();
+    add(&sender, "after the gap");
+    receiver
+        .import_from_pull(&sender.export_for_push().unwrap().bytes)
+        .unwrap();
+
+    assert!(receiver.has_missing_changes());
+    assert_eq!(titles(&receiver), vec!["one"]);
+
+    receiver.import_from_pull(&lost.bytes).unwrap();
+
+    assert!(!receiver.has_missing_changes());
+    assert_eq!(titles(&receiver), vec!["after the gap", "lost", "one"]);
+}
+
+/// Opens `path` as an install from before `repush_own_history_once`
+/// existed would look: it pushed `titles` and recorded them as pushed, but
+/// never ran the repair.
+fn open_install_from_before_the_repair(path: &str, titles: &[&str]) -> App {
+    {
+        let app = App::open(path).unwrap();
+        for title in titles {
+            add(&app, title);
+        }
+        app.mark_pushed(&app.export_for_push().unwrap()).unwrap();
+    }
+    rusqlite::Connection::open(path)
+        .unwrap()
+        .execute("DELETE FROM meta WHERE key = 'own_history_repushed'", [])
+        .unwrap();
+    App::open(path).unwrap()
+}
+
+#[test]
+fn an_install_that_pushed_before_resends_only_its_own_history_once() {
+    let dir = TempDir::new().unwrap();
+    let path = db_path(&dir, "old.sqlite3");
+    let other = App::open(&db_path(&dir, "other.sqlite3")).unwrap();
+    add(&other, "from another device");
+    let from_other = other.export_for_push().unwrap().bytes;
+    {
+        let app = App::open(&path).unwrap();
+        app.import_from_pull(&from_other).unwrap();
+    }
+
+    let app = open_install_from_before_the_repair(&path, &["mine", "also mine"]);
+
+    assert!(app.has_unpushed_changes().unwrap());
+    let repush = app.export_for_push().unwrap();
+    // Its changes build on the other device's, which every receiver
+    // already has from the log -- but they aren't resent.
+    let peer = App::open(&db_path(&dir, "peer.sqlite3")).unwrap();
+    peer.import_from_pull(&from_other).unwrap();
+    peer.import_from_pull(&repush.bytes).unwrap();
+    assert_eq!(
+        titles(&peer),
+        vec!["also mine", "from another device", "mine"]
+    );
+    let without_other = App::open(&db_path(&dir, "without.sqlite3")).unwrap();
+    without_other.import_from_pull(&repush.bytes).unwrap();
+    assert!(without_other.has_missing_changes());
+    app.mark_pushed(&repush).unwrap();
+    drop(app);
+
+    let reopened = App::open(&path).unwrap();
+    assert!(!reopened.has_unpushed_changes().unwrap());
+}
+
+#[test]
+fn the_resend_fills_a_gap_left_by_an_edit_lost_mid_push() {
+    let dir = TempDir::new().unwrap();
+    let sender_path = db_path(&dir, "sender.sqlite3");
+    let receiver_path = db_path(&dir, "receiver.sqlite3");
+    {
+        let sender = App::open(&sender_path).unwrap();
+        let receiver = App::open(&receiver_path).unwrap();
+        add(&sender, "one");
+        let first = sender.export_for_push().unwrap();
+        sender.mark_pushed(&first).unwrap();
+        receiver.import_from_pull(&first.bytes).unwrap();
+        // "lost" is recorded as pushed but never reaches the server.
+        add(&sender, "lost");
+        let lost = sender.export_for_push().unwrap();
+        sender.mark_pushed(&lost).unwrap();
+        add(&sender, "after");
+        receiver
+            .import_from_pull(&sender.export_for_push().unwrap().bytes)
+            .unwrap();
+        assert!(receiver.has_missing_changes());
+    }
+    // Loro keeps held-back changes in memory only: "after" is gone too.
+    let receiver = App::open(&receiver_path).unwrap();
+    assert!(!receiver.has_missing_changes());
+    assert_eq!(titles(&receiver), vec!["one"]);
+    let sender = open_install_from_before_the_repair(&sender_path, &[]);
+
+    receiver
+        .import_from_pull(&sender.export_for_push().unwrap().bytes)
+        .unwrap();
+
+    assert!(!receiver.has_missing_changes());
+    assert_eq!(titles(&receiver), vec!["after", "lost", "one"]);
+}
+
+#[test]
+fn a_fresh_install_never_pushed_so_has_nothing_to_resend() {
+    let dir = TempDir::new().unwrap();
+    let path = db_path(&dir, "fresh.sqlite3");
+    drop(App::open(&path).unwrap());
+    let app = App::open(&path).unwrap();
+    // Only the bootstrap list, same as any fresh install's first push.
+    let batch = app.export_for_push().unwrap();
+    app.mark_pushed(&batch).unwrap();
+    assert!(!app.has_unpushed_changes().unwrap());
 }

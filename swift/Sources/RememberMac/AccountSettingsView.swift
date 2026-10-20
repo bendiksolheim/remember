@@ -56,6 +56,14 @@ private struct SignedInSection: SwiftUI.View {
                         .foregroundStyle(.yellow)
                 }
             }
+            if model.isMissingChanges {
+                Label {
+                    Text("Some changes from another device can't show here yet, because that device hasn't sent everything they build on. Updating Remember on all your devices resends it.")
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.yellow)
+                }
+            }
         } header: {
             Text("Account")
         } footer: {

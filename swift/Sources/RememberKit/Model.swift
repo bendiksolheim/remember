@@ -16,6 +16,9 @@ public func defaultDatabasePath() -> String {
 public final class RememberModel {
     public private(set) var snapshot: Snapshot?
     public private(set) var lastSyncError: String?
+    /// Another device's changes can't show here until it resends some it
+    /// lost, as of the last sync round -- see `SyncOutcome.missingChanges`.
+    public private(set) var isMissingChanges = false
     /// When this device last finished a sync round without errors, for the
     /// signed-in account. Read from the Rust side (it's persisted there), so
     /// it's right straight after launch, not only after the first round.
@@ -71,9 +74,10 @@ public final class RememberModel {
 
         if let syncClient {
             let autoSyncBridge = SyncStatusBridge(
-                onComplete: { [weak self] _ in
+                onComplete: { [weak self] outcome in
                     Task { @MainActor in
                         self?.lastSyncError = nil
+                        self?.isMissingChanges = outcome.missingChanges
                         self?.refreshLastSyncedAt()
                     }
                 },

@@ -65,6 +65,11 @@ pub struct Doc {
     /// never synced. Defaults to 0 (UTC) until the caller sets it — see
     /// `Doc::set_local_offset_seconds`.
     local_offset_seconds: i32,
+    /// Imported changes Loro is holding back because they build on changes
+    /// this doc has never seen: per peer, the counter they run up to
+    /// (exclusive). Loro keeps such changes in memory only, so a reload
+    /// starts this empty again — see [`Doc::has_missing_changes`].
+    waiting: HashMap<u64, i32>,
 }
 
 fn doc_err<E: std::fmt::Display>(e: E) -> CoreError {
@@ -401,6 +406,7 @@ impl Doc {
             undo,
             revision: 0,
             local_offset_seconds: 0,
+            waiting: HashMap::new(),
         })
     }
 
@@ -420,6 +426,7 @@ impl Doc {
             undo,
             revision: 0,
             local_offset_seconds: 0,
+            waiting: HashMap::new(),
         })
     }
 
@@ -453,9 +460,27 @@ impl Doc {
 
     /// Merges updates from another peer into this doc — the same `import`
     /// primitive `load` uses, just against an already-populated document.
+    /// Changes that build on ones this doc doesn't have yet don't fail the
+    /// import: Loro holds them back until the missing ones arrive, and
+    /// [`Doc::has_missing_changes`] reports it.
     pub fn import_updates(&mut self, bytes: &[u8]) -> Result<(), CoreError> {
-        self.doc.import(bytes).map_err(doc_err)?;
+        let status = self.doc.import(bytes).map_err(doc_err)?;
+        for (peer, &(_, end)) in status.pending.iter().flat_map(|range| range.iter()) {
+            let waiting_end = self.waiting.entry(*peer).or_insert(end);
+            *waiting_end = (*waiting_end).max(end);
+        }
+        let vv = self.doc.oplog_vv();
+        self.waiting
+            .retain(|peer, end| vv.get(peer).copied().unwrap_or(0) < *end);
         Ok(())
+    }
+
+    /// Whether imported changes are being held back because they build on
+    /// changes this doc has never received — another device's history has a
+    /// gap here, and nothing it has written since can show until the gap is
+    /// filled. Cleared once an import fills it.
+    pub fn has_missing_changes(&self) -> bool {
+        !self.waiting.is_empty()
     }
 
     /// This doc's current version vector, encoded. Opaque outside this
@@ -463,6 +488,15 @@ impl Doc {
     /// later; nothing outside `doc.rs` interprets its contents.
     pub fn version_vector_bytes(&self) -> Vec<u8> {
         self.doc.oplog_vv().encode()
+    }
+
+    /// Like [`Doc::version_vector_bytes`], but as if this doc's own peer had
+    /// never made a change: [`Doc::export_since`] it, and the export is this
+    /// peer's whole history and nothing else.
+    pub fn version_vector_without_own_bytes(&self) -> Vec<u8> {
+        let mut vv = self.doc.oplog_vv();
+        vv.remove(&self.doc.peer_id());
+        vv.encode()
     }
 
     /// Incremental update export: everything since `since`, not the full

@@ -101,6 +101,40 @@ impl Store {
         Ok(())
     }
 
+    /// One-time repair for installs that pushed before `App::mark_pushed`
+    /// recorded exactly what was exported: an edit made while a push was in
+    /// flight could be marked pushed without ever being sent, and every
+    /// later change from this device builds on it, so other devices can't
+    /// apply any of them. If this install has pushed before, sets
+    /// `pushed_vv` to `vv` (this device's version minus its own changes,
+    /// so the next push resends its whole history); either way records that
+    /// it's done, so it never runs again. Atomic, so a crash midway just
+    /// runs it again on the next launch.
+    pub fn repush_own_history_once(&self, vv: &[u8]) -> Result<(), CoreError> {
+        let mut conn = self.lock();
+        let tx = conn.transaction().map_err(store_err)?;
+        let done = tx
+            .query_row(
+                "SELECT 1 FROM meta WHERE key = 'own_history_repushed'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(store_err)?
+            .is_some();
+        if done {
+            return Ok(());
+        }
+        tx.execute("UPDATE meta SET value = ?1 WHERE key = 'pushed_vv'", (vv,))
+            .map_err(store_err)?;
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('own_history_repushed', x'01')",
+            [],
+        )
+        .map_err(store_err)?;
+        tx.commit().map_err(store_err)
+    }
+
     /// The server's log cursor as of the last successful pull, i.e. "the
     /// highest `seq` this device has already imported". `None` means this
     /// device has never pulled — the next pull should start from the

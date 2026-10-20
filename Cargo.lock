@@ -2116,6 +2116,7 @@ dependencies = [
  "insta",
  "loro",
  "proptest",
+ "remember-core",
  "rusqlite",
  "serde",
  "serde_json",

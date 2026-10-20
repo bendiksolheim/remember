@@ -411,7 +411,11 @@ mod tests {
         let remote = open(&dir, "remote.sqlite3");
         add(&remote, "from elsewhere");
         transport
-            .push("tok", remote.peer_id(), remote.export_for_push().unwrap())
+            .push(
+                "tok",
+                remote.peer_id(),
+                remote.export_for_push().unwrap().bytes,
+            )
             .unwrap();
 
         thread::sleep(Duration::from_millis(150)); // several periodic ticks
@@ -436,17 +440,32 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let app = open(&dir, "a.sqlite3");
         let transport = Arc::new(InMemoryTransport::new());
+        // Neither timer can fire during the test, so a round that does
+        // happen can only be `sync_soon`'s -- asserted by waiting for its
+        // outcome rather than by sleeping a fixed time, which a slow CI
+        // runner can outlast.
         let coordinator = AutoSyncCoordinator::with_config(
             Arc::clone(&app),
             SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>, unused_auth()),
-            fast_config(),
+            CoordinatorConfig {
+                debounce: Duration::from_secs(60),
+                periodic: Duration::from_secs(60),
+                poll: Duration::from_millis(5),
+            },
         );
+        let (tx, rx) = mpsc::channel();
+        coordinator.set_listener(forward(tx));
         coordinator.set_session(Some(session("tok")));
+        // The first check is always due (nothing attempted yet); let that
+        // round finish so the next one can't be it.
+        rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
 
         add(&app, "local task");
         coordinator.sync_soon();
-        thread::sleep(Duration::from_millis(20)); // well under the 40ms debounce
-        assert_eq!(transport.log_rows().len(), 1);
+
+        let outcome = rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+        assert!(outcome.pushed_bytes > 0);
+        assert_eq!(transport.log_rows().len(), 2);
         drop(coordinator);
     }
 

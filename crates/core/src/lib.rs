@@ -14,7 +14,7 @@ pub mod snapshot;
 mod store;
 
 #[cfg(feature = "native")]
-pub use app::App;
+pub use app::{App, PushBatch};
 pub use clock::{fresh_peer_id, Clock, IdSource, SystemClock, UuidSource};
 #[cfg(any(test, feature = "testing"))]
 pub use clock::{FixedClock, SeqIdSource};

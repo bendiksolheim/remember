@@ -37,6 +37,11 @@ const COMPACT_AFTER_ROWS: i64 = 200;
 pub struct SyncOutcome {
     pub pulled: usize,
     pub pushed_bytes: usize,
+    /// Pulled changes are being held back because they build on changes
+    /// this device has never received -- see `App::has_missing_changes`.
+    /// Another device lost some of its own changes before pushing them,
+    /// and nothing it has written since can show here until it resends them.
+    pub missing_changes: bool,
 }
 
 #[derive(Clone)]
@@ -100,14 +105,18 @@ impl SyncEngine {
 
         ensure_still_bound(app, session)?;
         let pushed_bytes = if app.has_unpushed_changes()? {
-            let bytes = app.export_for_push()?;
-            self.transport.push(token, app.peer_id(), bytes.clone())?;
-            app.mark_pushed()?;
-            bytes.len()
+            let batch = app.export_for_push()?;
+            self.transport
+                .push(token, app.peer_id(), batch.bytes.clone())?;
+            app.mark_pushed(&batch)?;
+            batch.bytes.len()
         } else {
             0
         };
-        if log_len > COMPACT_AFTER_ROWS {
+        // A snapshot from a device that is holding pulled changes back would
+        // replace the rows carrying them with a document that lacks them.
+        let missing_changes = app.has_missing_changes();
+        if log_len > COMPACT_AFTER_ROWS && !missing_changes {
             self.compact(app, session)?;
         }
         app.mark_synced()?;
@@ -115,6 +124,7 @@ impl SyncEngine {
         Ok(SyncOutcome {
             pulled,
             pushed_bytes,
+            missing_changes,
         })
     }
 
@@ -220,7 +230,7 @@ mod tests {
             .push(
                 "tok",
                 remote_writer.peer_id(),
-                remote_writer.export_for_push().unwrap(),
+                remote_writer.export_for_push().unwrap().bytes,
             )
             .unwrap();
 
@@ -318,7 +328,7 @@ mod tests {
             .push(
                 "tok",
                 b_elsewhere.peer_id(),
-                b_elsewhere.export_for_push().unwrap(),
+                b_elsewhere.export_for_push().unwrap().bytes,
             )
             .unwrap();
 
@@ -367,7 +377,7 @@ mod tests {
             .push(
                 "tok",
                 elsewhere.peer_id(),
-                elsewhere.export_for_push().unwrap(),
+                elsewhere.export_for_push().unwrap().bytes,
             )
             .unwrap();
         let engine = SyncEngine::new(Arc::new(transport), unused_auth());
@@ -399,10 +409,11 @@ mod tests {
     fn push_one_row_per_task(transport: &InMemoryTransport, writer: &App, titles: &[String]) {
         for title in titles {
             add(writer, title);
+            let batch = writer.export_for_push().unwrap();
             transport
-                .push("tok", writer.peer_id(), writer.export_for_push().unwrap())
+                .push("tok", writer.peer_id(), batch.bytes.clone())
                 .unwrap();
-            writer.mark_pushed().unwrap();
+            writer.mark_pushed(&batch).unwrap();
         }
     }
 
@@ -503,6 +514,30 @@ mod tests {
     }
 
     #[test]
+    fn a_device_missing_changes_reports_it_and_never_compacts() {
+        let dir = TempDir::new().unwrap();
+        let writer = open(&dir, "writer.sqlite3");
+        let transport = Arc::new(InMemoryTransport::new());
+        push_one_row_per_task(&transport, &writer, &numbered("before", 1));
+        // Marked pushed, never sent: everything `writer` adds from here on
+        // builds on a change no other device has.
+        add(&writer, "lost");
+        writer
+            .mark_pushed(&writer.export_for_push().unwrap())
+            .unwrap();
+        push_one_row_per_task(&transport, &writer, &numbered("after", 201));
+
+        let app = open(&dir, "a.sqlite3");
+        let engine = SyncEngine::new(transport.clone() as Arc<dyn SyncTransport>, unused_auth());
+        let outcome = engine.sync_once(&app, &fresh_session("tok")).unwrap();
+
+        assert!(outcome.missing_changes);
+        assert_eq!(sorted_titles(&app), numbered("before", 1));
+        // Its snapshot would have replaced the rows it couldn't apply.
+        assert_eq!(transport.snapshot(), None);
+    }
+
+    #[test]
     fn a_log_at_the_threshold_is_left_alone() {
         let dir = TempDir::new().unwrap();
         let writer = open(&dir, "writer.sqlite3");
@@ -538,7 +573,10 @@ mod tests {
     /// Real Loro bytes, since `import_from_pull` rejects anything else.
     fn open_scratch_export() -> Vec<u8> {
         let dir = TempDir::new().unwrap();
-        open(&dir, "scratch.sqlite3").export_for_push().unwrap()
+        open(&dir, "scratch.sqlite3")
+            .export_for_push()
+            .unwrap()
+            .bytes
     }
 
     #[test]

@@ -296,6 +296,9 @@ pub struct Session {
 pub struct SyncOutcome {
     pub pulled: u64,
     pub pushed_bytes: u64,
+    /// Another device's changes can't show here until it resends some it
+    /// lost -- see `remember_sync::SyncOutcome::missing_changes`.
+    pub missing_changes: bool,
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
