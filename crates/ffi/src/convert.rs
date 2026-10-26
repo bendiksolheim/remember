@@ -86,6 +86,7 @@ pub fn list_row_from_core(row: &remember_core::ListRow) -> ListRow {
         name: row.name.clone(),
         color: list_color_from_core(row.color),
         task_count: row.task_count,
+        active_count: row.active_count,
     }
 }
 
@@ -344,11 +345,13 @@ mod tests {
             name: "Work".to_string(),
             color: remember_core::ListColor::Teal,
             task_count: 4,
+            active_count: 1,
         });
         assert_eq!(row.id, "l");
         assert_eq!(row.name, "Work");
         assert_eq!(row.color, ListColor::Teal);
         assert_eq!(row.task_count, 4);
+        assert_eq!(row.active_count, 1);
     }
 
     #[test]
@@ -489,6 +492,7 @@ mod tests {
                 name: "List".to_string(),
                 color: remember_core::ListColor::Pink,
                 task_count: 2,
+                active_count: 1,
             }],
             active_count: 3,
             can_undo: true,

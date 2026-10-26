@@ -27,7 +27,25 @@ let package = Package(
         .target(name: "RememberUI", dependencies: ["RememberKit"]),
         // RememberKit isn't just transitive here either (see the same note on
         // RememberMac below): RememberIOSApp.swift constructs RememberModel directly.
-        .target(name: "RememberApp", dependencies: ["RememberUI", "RememberKit"]),
+        .target(
+            name: "RememberApp",
+            dependencies: ["RememberUI", "RememberKit"],
+            // The iOS Simulator reads an app's entitlements from these two
+            // sections, not from its code signature (which `xtool dev
+            // --simulator` doesn't make) -- without them, every Keychain
+            // call fails with -34018 and signing in is impossible. Same
+            // thing Xcode does for simulator builds. A device build ignores
+            // them: there, the provisioning profile xtool signs with grants
+            // the real entitlements. See swift/README.md#apple.
+            linkerSettings: [
+                .unsafeFlags([
+                    "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__entitlements",
+                    "-Xlinker", "\(packageDir)/../apple/Simulator.entitlements",
+                    "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__ents_der",
+                    "-Xlinker", "\(packageDir)/../apple/Simulator.entitlements.der",
+                ], .when(platforms: [.iOS])),
+            ]
+        ),
         // RememberKit isn't just transitive here: AppDelegate.swift constructs
         // RememberModel directly, and SwiftPM requires importing a module to be
         // a direct dependency of the target, not just of one of its deps.

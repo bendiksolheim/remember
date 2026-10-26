@@ -118,6 +118,8 @@ pub struct ListRow {
     /// Every task in the list, done ones included -- what deleting it
     /// would delete.
     pub task_count: u32,
+    /// The open ones, tasks and steps: what the list has left to do.
+    pub active_count: u32,
 }
 
 /// A list's identity color — an opaque palette slot, not a hex value.
@@ -228,6 +230,12 @@ impl App {
         self.inner.set_view(convert::view_to_core(view));
     }
 
+    /// Completing a row keeps it in the snapshot, done, until this is
+    /// called -- see `remember_core::Session::release_held`.
+    pub fn release_held(&self) {
+        self.inner.release_held();
+    }
+
     /// Switches which list `current()` reads and new captures land in. See
     /// `remember_core::App::set_current_list`'s own doc comment.
     pub fn set_current_list(&self, list_id: String) -> Result<(), AppError> {
@@ -263,6 +271,14 @@ impl App {
 
     pub fn flush(&self) -> Result<(), AppError> {
         self.inner.flush().map_err(convert::app_error_from_core)
+    }
+
+    /// Whether this device has local changes no sync round has pushed yet
+    /// -- e.g. so iOS knows when it can let a backgrounded app suspend.
+    pub fn has_unpushed_changes(&self) -> Result<bool, AppError> {
+        self.inner
+            .has_unpushed_changes()
+            .map_err(convert::app_error_from_core)
     }
 
     /// When this device last finished a sync round without errors, in Unix

@@ -144,6 +144,14 @@ impl App {
         self.notify();
     }
 
+    /// Lets rows a completion kept in view leave it -- see
+    /// [`Session::release_held`]. Call when the host's linger time is up.
+    pub fn release_held(&self) {
+        if lock(&self.shared.state).release_held() {
+            self.notify();
+        }
+    }
+
     /// Switches which list `current()` reads and new captures land in,
     /// persisting the choice (see `Store::load_current_list`) so it
     /// survives a restart.

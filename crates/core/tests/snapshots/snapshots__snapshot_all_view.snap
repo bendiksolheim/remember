@@ -88,6 +88,7 @@ lists:
     name: Tasks
     color: Blue
     task_count: 6
+    active_count: 4
 active_count: 4
 can_undo: true
 can_redo: false

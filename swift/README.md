@@ -30,6 +30,20 @@ not `swift build` directly.
 
 `apple/` holds `Info-macOS.plist`, `Info-iOS.plist` and `AppIcon.png`.
 
+It also holds `Simulator.entitlements` and its DER encoding,
+`Simulator.entitlements.der`, which `Package.swift` links into the iOS app's
+`__TEXT,__entitlements` and `__TEXT,__ents_der` sections. The Simulator reads
+an app's entitlements from there rather than from its code signature, and
+`xtool dev --simulator` doesn't sign. Without them the Keychain fails with
+-34018, so signing in is impossible. A device build ignores them: the
+provisioning profile xtool signs with grants the real ones. `FAKETEAMID` is the
+same placeholder team Xcode uses. After editing the plist, regenerate the DER
+on a Mac:
+
+```bash
+derq query --raw -f xml -i apple/Simulator.entitlements -o apple/Simulator.entitlements.der
+```
+
 The bundle ID is `no.bendik.todo`, kept from the app's original name, as are
 the data folder, database file and keychain service. Renaming them would
 orphan existing data and sign existing installs out.

@@ -54,6 +54,9 @@ pub struct ListRow {
     /// Every task in the list, done ones included -- what a `DeleteList`
     /// on it would delete.
     pub task_count: u32,
+    /// The open ones -- tasks and steps -- counted like
+    /// [`Snapshot::active_count`]: what the list has left to do.
+    pub active_count: u32,
 }
 
 /// A list's identity color — an opaque palette slot, not a hex value, so

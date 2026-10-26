@@ -709,20 +709,21 @@ fn every_list_counts_all_its_tasks_whatever_list_or_view_is_read() {
     .unwrap();
 
     // Read the default list in the Active view: neither the list being
-    // read nor the filter changes the counts, and a done task still counts
-    // (deleting the list would delete it too).
-    let counts: Vec<(String, u32)> = doc
+    // read nor the filter changes the counts. A done task still counts in
+    // `task_count` (deleting the list would delete it too), not in
+    // `active_count`.
+    let counts: Vec<(String, u32, u32)> = doc
         .read(ViewFilter::Active, "default", &clock)
         .lists
         .into_iter()
-        .map(|l| (l.name, l.task_count))
+        .map(|l| (l.name, l.task_count, l.active_count))
         .collect();
     assert_eq!(
         counts,
         vec![
-            ("Empty".to_string(), 0),
-            ("Work".to_string(), 2),
-            ("Tasks".to_string(), 1),
+            ("Empty".to_string(), 0, 0),
+            ("Work".to_string(), 2, 1),
+            ("Tasks".to_string(), 1, 1),
         ]
     );
 }
@@ -1258,4 +1259,69 @@ fn list_command_revisions_all_increase_on_real_change() {
         },
     );
     bump(&mut doc, Command::DeleteList { id: work });
+}
+
+/// A device that deleted the built-in list meets a fresh device that made
+/// its own and added to it. The newer delete wins the name, but the fresh
+/// device's entry in `list_order` survives -- so the list must still read,
+/// take tasks, rename and delete like any other, not as a nameless list
+/// every command reports as missing.
+#[test]
+fn a_built_in_list_deleted_elsewhere_survives_a_merge_as_a_working_list() {
+    let clock = FixedClock(0);
+    let ids = SeqIdSource::new();
+    let mut mac = Doc::new(1).unwrap();
+    let work = add_list(&mut mac, &clock, &ids, "Work");
+    let delete_default = Command::DeleteList {
+        id: "default".to_string(),
+    };
+    mac.apply(delete_default.clone(), &clock, &ids).unwrap();
+    let mut phone = Doc::new(2).unwrap();
+    add(&mut phone, &clock, &ids, "from the phone");
+
+    mac.import_updates(&phone.export_updates().unwrap())
+        .unwrap();
+    phone
+        .import_updates(&mac.export_updates().unwrap())
+        .unwrap();
+
+    for doc in [&mut mac, &mut phone] {
+        let snap = doc.read(ViewFilter::All, "default", &clock);
+        let names: Vec<(&str, &str)> = snap
+            .lists
+            .iter()
+            .map(|l| (l.id.as_str(), l.name.as_str()))
+            .collect();
+        assert_eq!(names, [(work.as_str(), "Work"), ("default", "Tasks")]);
+        assert_eq!(titles(&snap), ["from the phone"]);
+        assert_eq!(snap.rows[0].list_name, "Tasks");
+        // `add` lands in "default".
+        add(doc, &clock, &ids, "added after");
+    }
+
+    // Renaming gives it its name back; moving a task in works.
+    let rename = Command::RenameList {
+        id: "default".to_string(),
+        name: "Phone".to_string(),
+    };
+    mac.apply(rename, &clock, &ids).unwrap();
+    let task = mac.read(ViewFilter::All, "default", &clock).rows[0]
+        .id
+        .clone();
+    let to_default = |list_id: &str| Command::SetList {
+        id: task.clone(),
+        list_id: list_id.to_string(),
+    };
+    mac.apply(to_default(&work), &clock, &ids).unwrap();
+    mac.apply(to_default("default"), &clock, &ids).unwrap();
+    let snap = mac.read(ViewFilter::All, "default", &clock);
+    assert_eq!(snap.lists[1].name, "Phone");
+    assert_eq!(snap.rows.len(), 2);
+
+    // Deleting it works without renaming first.
+    phone.apply(delete_default, &clock, &ids).unwrap();
+    let snap = phone.read(ViewFilter::All, &work, &clock);
+    assert_eq!(snap.lists.len(), 1);
+    assert_eq!(snap.lists[0].id, work);
+    assert_eq!(snap.active_count, 0);
 }

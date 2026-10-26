@@ -60,6 +60,12 @@ impl Remember {
         Ok(())
     }
 
+    /// Lets the rows a completion kept in view leave it — see
+    /// `Session::release_held`.
+    pub fn release_held(&mut self) {
+        self.session.release_held();
+    }
+
     pub fn set_current_list(&mut self, list_id: String) {
         self.session.set_current_list(list_id);
     }

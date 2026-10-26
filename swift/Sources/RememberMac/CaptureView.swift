@@ -63,50 +63,23 @@ struct CaptureView: SwiftUI.View {
     /// `.disabled` gate can both read/drive it directly.
     @State private var editingRowID: String?
     @State private var editText = ""
-    /// Rows that were just checked off, held here (not in `model.snapshot`,
-    /// which already excludes them once `View.active` is set) so they can
-    /// visibly linger for ~3s instead of vanishing the instant they're
-    /// marked done.
-    @State private var ghosts: [TaskRow] = []
-    /// Pending removal task per ghost row id, so un-completing a row (Space
-    /// or click, while it's still lingering) can cancel the removal instead
-    /// of racing it.
-    @State private var ghostRemovalTasks: [String: Task<Void, Never>] = [:]
-    /// Where each ghost was, so it renders back in its original spot instead
-    /// of jumping to the top of the list while it lingers: the id of the
-    /// active row it directly followed at the moment it was completed, or
-    /// `""` if it was first. Reordering rows out from under a focused one
-    /// is what was corrupting keyboard focus (and the panel's height calc)
-    /// on complete/un-complete -- this keeps every row's position stable
-    /// across the whole ghost lifecycle.
-    @State private var ghostAnchors: [String: String] = [:]
-    /// Steps ghosted with their task, by task id, so un-completing the task
-    /// brings them back too.
-    @State private var ghostBlocks: [String: [String]] = [:]
-    /// Ghost ids that have been un-completed but are kept in `ghosts` until
-    /// `model.snapshot` actually confirms the row is active again --
-    /// `RememberModel`'s snapshot updates hop through a `Task { @MainActor in
-    /// ... } ` (Model.swift), landing a run-loop turn after `dispatch`
-    /// returns, so dropping a ghost the instant we dispatch would make the
-    /// row vanish from `displayRows` for a frame (neither still a ghost nor
-    /// yet back in the live snapshot) -- a visible row-count blip that
-    /// shifts the panel's height. Keeping it in `ghosts` (rendered as
-    /// not-completed) until the snapshot catches up closes that gap.
-    @State private var revivedIDs: Set<String> = []
+    /// Releases the rows remember-core keeps in view, done, after a
+    /// completion (see `RememberModel.releaseHeld`) -- a second after the
+    /// last toggle, so a run of check-offs leaves together.
+    @State private var releaseTask: Task<Void, Never>?
     /// Ids of rows mid-fade-out after being moved to a different list by
-    /// `moveFocusedRow`. Unlike `ghosts`, these are never revivable by
-    /// clicking -- a list-move isn't a toggle -- so they get their own
-    /// smaller set of state rather than overloading the completion-ghost
-    /// machinery with a second, differently-behaved kind of entry.
+    /// `moveFocusedRow`. Unlike a completed row, these are never revivable by
+    /// clicking -- a list-move isn't a toggle -- and remember-core doesn't
+    /// hold them, so the fade is kept here, Mac-only.
     @State private var fadingMoveIDs: Set<String> = []
     /// The row's data at the moment it started fading, keyed by id -- it's
     /// about to drop out of `model.snapshot.rows` (it now belongs to a
     /// different list), so `displayRows` can no longer source it from
     /// there once that snapshot lands.
     @State private var fadingMoveRows: [String: TaskRow] = [:]
-    /// Where each fading-move row was, same convention as `ghostAnchors`:
-    /// the id it directly followed when the move started, or `""` if it
-    /// was first.
+    /// Where each fading-move row was, so it fades out in its own spot
+    /// rather than jumping: the id it directly followed when the move
+    /// started, or `""` if it was first.
     @State private var fadingMoveAnchors: [String: String] = [:]
     /// Pending final-removal task per fading-move row id, cancelled by
     /// `reconcileUndoneMoves` if ⌘Z brings the row back before the fade
@@ -223,6 +196,9 @@ struct CaptureView: SwiftUI.View {
         // fire. The next summon must be a plain capture.
         .onReceive(NotificationCenter.default.publisher(for: .rememberCapturePanelDidHide)) { _ in
             addTargetID = nil
+            releaseTask?.cancel()
+            releaseTask = nil
+            model.releaseHeld()
         }
         .onAppear {
             focus = .input
@@ -233,7 +209,6 @@ struct CaptureView: SwiftUI.View {
             onContentHeightChange(newValue)
         }
         .onChange(of: model.snapshot?.revision) { _, _ in
-            reconcileRevivedGhosts()
             reconcileUndoneMoves()
             // The target is gone (completed, deleted, moved, synced away).
             if addTargetID != nil, addTarget == nil {
@@ -295,7 +270,7 @@ struct CaptureView: SwiftUI.View {
                     .keyboardShortcut(.space, modifiers: [])
                     .disabled(!isRowFocused)
                 // Bare "e" enters inline editing on the focused row. Disabled
-                // for completed/ghost rows -- renaming a task that's done (or
+                // for completed rows -- renaming a task that's done (or
                 // mid-fade-out) isn't meaningful -- and naturally inert while
                 // the quick-add field or another edit field has focus.
                 Button("Edit Focused") { beginEditFocusedRow() }
@@ -401,7 +376,7 @@ struct CaptureView: SwiftUI.View {
     }
 
     /// Keyboard-focus order for alt+j/alt+k: the quick-add field first, then
-    /// every displayed row (completion ghosts included, fading-move rows
+    /// every displayed row (held completed rows included, fading-move rows
     /// excluded -- see `fadingMoveIDs`) in display order. Both ends wrap
     /// around.
     private var focusChain: [FocusTarget] {
@@ -423,16 +398,16 @@ struct CaptureView: SwiftUI.View {
         model.dispatch(.shift(id: id, delta: Int32(delta)))
     }
 
-    /// Whether `id` is in the live snapshot, not a ghost or fading row.
+    /// Whether `id` is an open row in the snapshot -- not a completed one
+    /// remember-core is only holding until release, nor a fading row.
     private func isLive(_ id: String) -> Bool {
-        !ghosts.contains { $0.id == id }
-            && !fadingMoveIDs.contains(id)
-            && (model.snapshot?.rows.contains { $0.id == id } ?? false)
+        !fadingMoveIDs.contains(id)
+            && (model.snapshot?.rows.contains { $0.id == id && !$0.done } ?? false)
     }
 
     /// The live row `addTargetID` names, or `nil` once it's gone.
     private var addTarget: TaskRow? {
-        guard let addTargetID else { return nil }
+        guard let addTargetID, isLive(addTargetID) else { return nil }
         return model.snapshot?.rows.first { $0.id == addTargetID }
     }
 
@@ -453,14 +428,14 @@ struct CaptureView: SwiftUI.View {
     /// ⌘⌥1–⌘⌥9: moves the focused row into `listId` (always one of the
     /// first 9 lists -- see the overlay buttons above). Silently does
     /// nothing if there's no eligible focused row at all (no focus, mid
-    /// rename, or a completion ghost -- renaming/reviving and moving don't
-    /// mix, same reasoning as `canEditFocusedRow`) or if the row is already
-    /// in `listId` -- no command, no fade, no blink, since nothing would
-    /// actually change.
+    /// rename, or a held completed row -- renaming/reviving and moving
+    /// don't mix, same reasoning as `canEditFocusedRow`) or if the row is
+    /// already in `listId` -- no command, no fade, no blink, since nothing
+    /// would actually change.
     private func moveFocusedRow(to listId: String) {
         guard case .row(let id)? = focus,
             editingRowID == nil,
-            !ghosts.contains(where: { $0.id == id }),
+            isLive(id),
             let rows = model.snapshot?.rows,
             let index = rows.firstIndex(where: { $0.id == id }),
             rows[index].listId != listId
@@ -471,7 +446,7 @@ struct CaptureView: SwiftUI.View {
         // Computed from the chain *before* dispatch -- once the rows leave
         // `model.snapshot.rows` the chain would no longer contain them at
         // all, so there'd be nothing to find "the next one after" from.
-        // Unlike `removeGhost`'s equivalent check, no `focus == .row(id)`
+        // Unlike `releaseHeld`'s equivalent check, no `focus == .row(id)`
         // re-check is needed before applying it: everything here runs
         // synchronously, so focus can't have moved out from under us
         // between the guard above and this assignment.
@@ -597,46 +572,38 @@ struct CaptureView: SwiftUI.View {
         }
     }
 
-    /// Active rows in their natural order, with each completion ghost and
-    /// each fading-move row reinserted right after the anchor it was
-    /// captured with -- never at the front -- so a row's index never
-    /// changes across a complete/un-complete cycle or a move's fade-out.
-    /// Any id still in `ghosts` or `fadingMoveIDs` is excluded from `active`
-    /// unconditionally (not just while genuinely completed/fading): while
-    /// reviving a ghost, or right after a move dispatches, the row is still
-    /// in the overlay set *and* may briefly also still be in the stale
-    /// snapshot, and without this filter it would render twice for a frame.
+    /// The snapshot's rows -- completed ones included while remember-core
+    /// holds them, in place -- with each fading-move row reinserted right
+    /// after the anchor it was captured with, never at the front, so a
+    /// row's index never changes during a move's fade-out. Any id still in
+    /// `fadingMoveIDs` is excluded from the snapshot rows unconditionally:
+    /// right after a move dispatches, the row may briefly also still be in
+    /// the stale snapshot, and without this filter it would render twice
+    /// for a frame.
     private var displayRows: [(row: TaskRow, completed: Bool, fading: Bool)] {
-        let overlayIDs = Set(ghosts.map(\.id)).union(fadingMoveIDs)
-        let active = (model.snapshot?.rows ?? []).filter { !overlayIDs.contains($0.id) }
+        let live = (model.snapshot?.rows ?? []).filter { !fadingMoveIDs.contains($0.id) }
 
-        // Recursive: steps that left with their task anchor to the overlay
+        // Recursive: steps that left with their task anchor to the fading
         // row above them.
-        func overlaysAnchored(to anchor: String) -> [(TaskRow, Bool, Bool)] {
+        func fadingAnchored(to anchor: String) -> [(TaskRow, Bool, Bool)] {
             var entries: [(TaskRow, Bool, Bool)] = []
-            for ghost in ghosts where ghostAnchors[ghost.id] == anchor {
-                entries.append((ghost, !revivedIDs.contains(ghost.id), false))
-                entries += overlaysAnchored(to: ghost.id)
-            }
             for id in fadingMoveIDs where fadingMoveAnchors[id] == anchor {
                 guard let row = fadingMoveRows[id] else { continue }
                 entries.append((row, false, true))
-                entries += overlaysAnchored(to: id)
+                entries += fadingAnchored(to: id)
             }
             return entries
         }
 
-        var result = overlaysAnchored(to: "")
-        for row in active {
-            result.append((row, false, false))
-            result += overlaysAnchored(to: row.id)
+        var result = fadingAnchored(to: "")
+        for row in live {
+            result.append((row, row.done, false))
+            result += fadingAnchored(to: row.id)
         }
-        // An overlay row whose anchor is itself gone (e.g. also completed,
-        // also moved, or deleted) has nowhere to be reinserted -- fall back
-        // to the end rather than dropping it.
+        // A fading row whose anchor is itself gone (e.g. also moved, or
+        // deleted) has nowhere to be reinserted -- fall back to the end
+        // rather than dropping it.
         let placedIDs = Set(result.map(\.0.id))
-        result += ghosts.filter { !placedIDs.contains($0.id) }
-            .map { ($0, !revivedIDs.contains($0.id), false) }
         result += fadingMoveIDs.filter { !placedIDs.contains($0) }
             .compactMap { id in fadingMoveRows[id].map { (row: $0, completed: false, fading: true) } }
         return result
@@ -662,67 +629,38 @@ struct CaptureView: SwiftUI.View {
         dueDismissed = false
     }
 
+    /// Completes or reopens `id`. A completed row stays in the snapshot,
+    /// in place, until `releaseHeld` -- remember-core holds it, and the
+    /// steps that went with it -- so this only has to (re)start the timer.
     private func toggle(id: String) {
         focus = .row(id)
-        let isGhost = ghosts.contains { $0.id == id }
-        let isCompleted = isGhost && !revivedIDs.contains(id)
-
-        if isCompleted {
-            // Currently completed (whether freshly so or still lingering):
-            // un-complete it. Stays in `ghosts`, just marked as reviving,
-            // until `model.snapshot` confirms it's active again -- see
-            // `revivedIDs`.
-            revive(id: id)
-            model.dispatch(.setDone(id: id, done: false))
-            // A block completed together comes back together.
-            for stepID in ghostBlocks.removeValue(forKey: id) ?? []
-            where ghosts.contains(where: { $0.id == stepID }) && !revivedIDs.contains(stepID) {
-                revive(id: stepID)
-                model.dispatch(.setDone(id: stepID, done: false))
-            }
-            // Reopening a step reopens its task, so a lingering task ghost
-            // comes back too.
-            if let taskID = ghosts.first(where: { $0.id == id })?.parentId,
-                ghosts.contains(where: { $0.id == taskID }),
-                !revivedIDs.contains(taskID) {
-                revive(id: taskID)
-            }
-        } else if isGhost {
-            // Was reviving (still in `ghosts`, not yet confirmed active) --
-            // re-completing it before that confirmation lands just flips it
-            // back and restarts the lingering timer.
-            revivedIDs.remove(id)
-            model.dispatch(.setDone(id: id, done: true))
-            scheduleGhostRemoval(id: id)
-            // Its steps get completed again, so they linger again too.
-            let steps = ghosts.filter { $0.parentId == id && revivedIDs.contains($0.id) }.map(\.id)
-            for stepID in steps {
-                revivedIDs.remove(stepID)
-                scheduleGhostRemoval(id: stepID)
-            }
-            if !steps.isEmpty {
-                ghostBlocks[id] = steps
-            }
-        } else if let rows = model.snapshot?.rows, let idx = rows.firstIndex(where: { $0.id == id }) {
-            model.dispatch(.setDone(id: id, done: true))
-            let block = Self.block(at: idx, in: rows)
-            for (offset, row) in block.enumerated() {
-                let rowIndex = idx + offset
-                ghostAnchors[row.id] = rowIndex > 0 ? rows[rowIndex - 1].id : ""
-                ghosts.append(row)
-                scheduleGhostRemoval(id: row.id)
-            }
-            if block.count > 1 {
-                ghostBlocks[id] = block.dropFirst().map(\.id)
-            }
+        guard let row = model.snapshot?.rows.first(where: { $0.id == id }) else { return }
+        model.dispatch(.setDone(id: id, done: !row.done))
+        releaseTask?.cancel()
+        releaseTask = Task {
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            releaseHeld()
         }
     }
 
-    /// Marks a ghost as coming back (see `revivedIDs`).
-    private func revive(id: String) {
-        ghostRemovalTasks[id]?.cancel()
-        ghostRemovalTasks[id] = nil
-        revivedIDs.insert(id)
+    /// The release timer ran out. If a completed row still held focus,
+    /// hands it to the next open row (or the quick-add field), rather than
+    /// letting it drop to nil the moment its row disappears from the tree.
+    private func releaseHeld() {
+        releaseTask = nil
+        var successor: FocusTarget?
+        let chain = focusChain
+        if case .row(let id)? = focus, !isLive(id), let idx = chain.firstIndex(of: .row(id)) {
+            successor = (Array(chain[(idx + 1)...]) + chain[..<idx]).first { target in
+                guard case .row(let other) = target else { return true }
+                return isLive(other)
+            }
+        }
+        model.releaseHeld()
+        if let successor {
+            focus = successor
+        }
     }
 
     /// The row at `index` plus, for a task, its steps shown below it.
@@ -730,50 +668,6 @@ struct CaptureView: SwiftUI.View {
         let row = rows[index]
         guard row.parentId == nil else { return [row] }
         return [row] + rows[(index + 1)...].prefix { $0.parentId == row.id }
-    }
-
-    private func scheduleGhostRemoval(id: String) {
-        ghostRemovalTasks[id] = Task {
-            try? await Task.sleep(for: .seconds(1))
-            guard !Task.isCancelled else { return }
-            removeGhost(id: id)
-        }
-    }
-
-    /// Called once a ghost's lingering window actually elapses (not on
-    /// revive, which goes through `toggle` above). If it still held focus,
-    /// hands focus to the row that was after it, rather than letting it
-    /// drop to nil the moment its row disappears from the tree.
-    private func removeGhost(id: String) {
-        var successor: FocusTarget?
-        if focus == .row(id) {
-            let chain = focusChain
-            if let idx = chain.firstIndex(of: .row(id)) {
-                successor = chain[(idx + 1) % chain.count]
-            }
-        }
-        ghosts.removeAll { $0.id == id }
-        ghostAnchors[id] = nil
-        ghostRemovalTasks[id] = nil
-        ghostBlocks[id] = nil
-        revivedIDs.remove(id)
-        if let successor {
-            focus = successor
-        }
-    }
-
-    /// Drops any reviving ghost once `model.snapshot` actually includes it
-    /// again, now that the live active list can supply it -- see
-    /// `revivedIDs`.
-    private func reconcileRevivedGhosts() {
-        guard !revivedIDs.isEmpty, let rows = model.snapshot?.rows else { return }
-        let confirmed = revivedIDs.intersection(rows.map(\.id))
-        guard !confirmed.isEmpty else { return }
-        for id in confirmed {
-            ghosts.removeAll { $0.id == id }
-            ghostAnchors[id] = nil
-        }
-        revivedIDs.subtract(confirmed)
     }
 }
 
@@ -975,7 +869,7 @@ private struct CaptureTaskRow: SwiftUI.View {
     /// list (see `CaptureView.fadingMoveIDs`). Purely visual -- the row is
     /// already gone from the live data, this is its exit animation -- so
     /// it's rendered dimmed and made non-interactive rather than, say,
-    /// still toggleable like a completion ghost is.
+    /// still toggleable like a held completed row is.
     let fading: Bool
     let isFocused: Bool
     let isEditing: Bool
@@ -997,7 +891,7 @@ private struct CaptureTaskRow: SwiftUI.View {
             // .focusable() at the call site) is the single focus target,
             // so this doesn't compete with it for Tab/alt+j/alt+k.
             .focusable(false)
-            // Toggling completion mid-edit would immediately ghost the row
+            // Toggling completion mid-edit would immediately complete the row
             // whose title is being typed into -- block it until the edit
             // finishes.
             .disabled(isEditing)
@@ -1042,7 +936,7 @@ private struct CaptureTaskRow: SwiftUI.View {
         .animation(.easeOut(duration: 0.2), value: completed)
         // Done rows recede further than just their secondary/strikethrough
         // text color -- fading and completed are mutually exclusive (a row
-        // is never both an overlay-list-move and a completion ghost at
+        // is never both an overlay-list-move and a held completed row at
         // once), so this one modifier can serve both.
         .opacity(fading ? 0.3 : (completed ? 0.55 : 1))
         // Inert, not just dimmed: it's already gone from the list this

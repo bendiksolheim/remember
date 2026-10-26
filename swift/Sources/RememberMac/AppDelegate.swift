@@ -21,11 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SpotlightPanelDelegate
 
         NSApp.setActivationPolicy(.accessory)
 
-        // Bare project URL, no path — `remember-sync`'s `HttpTransport`/`AuthClient`
-        // append `/rest/v1/...` and `/auth/v1/...` themselves.
         model = try! RememberModel(
-            supabaseURL: "https://xzmbkeeaycyaluadzxhe.supabase.co",
-            supabaseAnonKey: "sb_publishable_xRie_YdgGu7lS0ozQzYeUg_Ww0Ek7mE"
+            supabaseURL: SyncBackend.url,
+            supabaseAnonKey: SyncBackend.anonKey
         )
         // Set once here rather than relying on CaptureView's onAppear:
         // the panel's SwiftUI content exists (and can start reacting to

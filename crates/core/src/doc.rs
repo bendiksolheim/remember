@@ -35,7 +35,7 @@
 //! migration pass required.
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use loro::{ExportMode, LoroDoc, LoroMap, LoroMovableList, LoroValue, UndoManager, VersionVector};
 
@@ -54,6 +54,7 @@ use crate::CoreError;
 /// property.
 pub(crate) const DEFAULT_LIST_ID: &str = "default";
 const DEFAULT_LIST_NAME: &str = "Tasks";
+const UNTITLED_LIST_NAME: &str = "Untitled";
 
 pub struct Doc {
     doc: LoroDoc,
@@ -130,6 +131,28 @@ fn dedup_list_order_ids(list_order: &LoroMovableList) -> Vec<String> {
         .into_iter()
         .filter(|id| seen.insert(id.clone()))
         .collect()
+}
+
+/// A list exists while it's in `list_order` -- what the roster shows --
+/// even with no name in `lists`. That happens when one device deletes the
+/// built-in list and another, not yet synced, makes its own: the newer
+/// delete wins the name, but the other device's `list_order` entry was
+/// never deleted, and it may already hold tasks. It reads as
+/// [`DEFAULT_LIST_NAME`] again until renamed.
+fn list_exists(list_order: &LoroMovableList, id: &str) -> bool {
+    order_ids(list_order).iter().any(|x| x == id)
+}
+
+/// `id`'s name, for a list without one (see [`list_exists`]) the name it
+/// would have been created with.
+fn list_name(lists: &LoroMap, id: &str) -> String {
+    lists
+        .get(id)
+        .and_then(|v| as_string(&v.get_deep_value()))
+        .unwrap_or_else(|| match id {
+            DEFAULT_LIST_ID => DEFAULT_LIST_NAME.to_string(),
+            _ => UNTITLED_LIST_NAME.to_string(),
+        })
 }
 
 /// Ensures the `lists`/`list_order` containers are non-empty, inserting
@@ -552,7 +575,7 @@ impl Doc {
             },
             Command::SetTitle { id, title } => self.apply_set_title(&id, title),
             Command::SetNotes { id, notes } => self.set_field(&id, "notes", notes.into()),
-            Command::SetDone { id, done } => self.apply_set_done(&id, done),
+            Command::SetDone { id, done } => self.set_done(&[&id], done),
             Command::SetParent { id, parent_id } => self.apply_set_parent(&id, parent_id),
             Command::Indent { .. } | Command::Outdent { .. } | Command::Shift { .. } => {
                 Err(CoreError::Document(
@@ -583,6 +606,19 @@ impl Doc {
     }
 
     pub fn read(&self, view: ViewFilter, list: &str, clock: &dyn Clock) -> Snapshot {
+        self.read_holding(view, list, clock, &HashSet::new())
+    }
+
+    /// `read`, but the rows in `held` show whatever `view` says (see
+    /// `Session::release_held`).
+    pub fn read_holding(
+        &self,
+        view: ViewFilter,
+        list: &str,
+        clock: &dyn Clock,
+        held: &HashSet<String>,
+    ) -> Snapshot {
+        let shows = |e: &Entry, done: bool| matches_filter(done, view) || held.contains(&e.id);
         let now = clock.now();
         let tasks = self.doc.get_map("tasks");
         let order = self.doc.get_movable_list("order");
@@ -593,10 +629,7 @@ impl Doc {
             dedup_list_order_ids(&self.doc.get_movable_list("list_order"))
                 .into_iter()
                 .map(|id| {
-                    let name = lists_map
-                        .get(&id)
-                        .and_then(|v| as_string(&v.get_deep_value()))
-                        .unwrap_or_default();
+                    let name = list_name(&lists_map, &id);
                     // Always present by the time `read()` can run — see
                     // `bootstrap_list_colors` — but defaults defensively rather
                     // than panicking if a value is ever missing or wrong-typed,
@@ -611,6 +644,7 @@ impl Doc {
                         name,
                         color,
                         task_count: 0,
+                        active_count: 0,
                     }
                 })
                 .collect();
@@ -618,10 +652,8 @@ impl Doc {
         let tree = Tree::new(&tasks, &order);
         let mut active_count = 0u32;
         let mut task_counts: HashMap<String, u32> = HashMap::new();
-        let list_name = lists_map
-            .get(list)
-            .and_then(|v| as_string(&v.get_deep_value()))
-            .unwrap_or_default();
+        let mut active_counts: HashMap<String, u32> = HashMap::new();
+        let list_name = list_name(&lists_map, list);
         let row = |entry: &Entry, done: bool, display_due: Option<i64>| TaskRow {
             id: entry.id.clone(),
             title: entry.title.clone(),
@@ -653,7 +685,9 @@ impl Doc {
             for entry in std::iter::once(task).chain(its_steps.iter().copied()) {
                 *task_counts.entry(entry.list_id.clone()).or_default() += 1;
             }
-            active_count += u32::from(!done) + (its_steps.len() - steps_done) as u32;
+            let open = u32::from(!done) + (its_steps.len() - steps_done) as u32;
+            active_count += open;
+            *active_counts.entry(task.list_id.clone()).or_default() += open;
             if task.list_id != list {
                 continue;
             }
@@ -661,9 +695,9 @@ impl Doc {
             let shown_steps: Vec<&Entry> = its_steps
                 .iter()
                 .copied()
-                .filter(|s| matches_filter(s.done, view))
+                .filter(|s| shows(s, s.done))
                 .collect();
-            let matches = matches_filter(done, view);
+            let matches = shows(task, done);
             if !matches && shown_steps.is_empty() {
                 continue;
             }
@@ -689,6 +723,7 @@ impl Doc {
 
         for list_row in &mut list_rows {
             list_row.task_count = task_counts.get(&list_row.id).copied().unwrap_or(0);
+            list_row.active_count = active_counts.get(&list_row.id).copied().unwrap_or(0);
         }
 
         Snapshot {
@@ -783,7 +818,7 @@ impl Doc {
         let pos = self.insert_position(&order, after.as_deref())?;
 
         let list_id = list_id.unwrap_or_else(|| DEFAULT_LIST_ID.to_string());
-        if self.doc.get_map("lists").get(&list_id).is_none() {
+        if !list_exists(&self.doc.get_movable_list("list_order"), &list_id) {
             return Err(CoreError::NotFound(list_id));
         }
 
@@ -954,21 +989,29 @@ impl Doc {
     }
 
     /// Completing a task completes its steps; reopening a step reopens its
-    /// task. Unchanged fields aren't written, so a no-op commits nothing.
-    fn apply_set_done(&mut self, id: &str, done: bool) -> Result<(), CoreError> {
+    /// task. All of `ids` land as one commit, so one `Undo` takes them all
+    /// back, and an unknown id changes nothing. Unchanged fields aren't
+    /// written, so a no-op commits nothing.
+    pub(crate) fn set_done(&mut self, ids: &[&str], done: bool) -> Result<(), CoreError> {
         let tree = self.tree();
-        let mut targets = vec![id];
-        if let Some(i) = tree.find(id) {
-            match (done, tree.parent[i]) {
-                (true, _) => targets.extend(tree.steps[i].iter().map(|&s| tree.id(s))),
-                (false, Some(task)) => targets.push(tree.id(task)),
-                (false, None) => {}
+        let mut targets = Vec::new();
+        for &id in ids {
+            targets.push(id);
+            if let Some(i) = tree.find(id) {
+                match (done, tree.parent[i]) {
+                    (true, _) => targets.extend(tree.steps[i].iter().map(|&s| tree.id(s))),
+                    (false, Some(task)) => targets.push(tree.id(task)),
+                    (false, None) => {}
+                }
             }
         }
+        let maps = targets
+            .into_iter()
+            .map(|target| self.existing_task_map(target))
+            .collect::<Result<Vec<_>, _>>()?;
         let value = LoroValue::from(done);
         let mut changed = false;
-        for target in targets {
-            let task = self.existing_task_map(target)?;
+        for task in maps {
             if task.get("done").map(|v| v.get_deep_value()).as_ref() != Some(&value) {
                 task.insert("done", value.clone()).map_err(doc_err)?;
                 changed = true;
@@ -1051,7 +1094,7 @@ impl Doc {
     /// A task's steps go with it; a step moved on its own stops being one.
     fn apply_set_list(&mut self, id: &str, list_id: String) -> Result<(), CoreError> {
         let task = self.existing_task_map(id)?;
-        if self.doc.get_map("lists").get(&list_id).is_none() {
+        if !list_exists(&self.doc.get_movable_list("list_order"), &list_id) {
             return Err(CoreError::NotFound(list_id));
         }
 
@@ -1124,9 +1167,10 @@ impl Doc {
         Ok(())
     }
 
+    /// Also how a list without a name (see [`list_exists`]) gets one back.
     fn apply_rename_list(&mut self, id: &str, name: String) -> Result<(), CoreError> {
         let lists = self.doc.get_map("lists");
-        if lists.get(id).is_none() {
+        if !list_exists(&self.doc.get_movable_list("list_order"), id) {
             return Err(CoreError::NotFound(id.to_string()));
         }
 
@@ -1151,11 +1195,11 @@ impl Doc {
     /// and there'd be nowhere left for new captures to land.
     fn apply_delete_list(&mut self, id: &str) -> Result<(), CoreError> {
         let lists = self.doc.get_map("lists");
-        if lists.get(id).is_none() {
+        let list_order = self.doc.get_movable_list("list_order");
+        if !list_exists(&list_order, id) {
             return Err(CoreError::NotFound(id.to_string()));
         }
 
-        let list_order = self.doc.get_movable_list("list_order");
         let distinct_list_count = dedup_list_order_ids(&list_order).len();
         if distinct_list_count <= 1 {
             return Err(CoreError::Document(
@@ -1289,6 +1333,20 @@ mod tests {
 
         let snap = doc.read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0));
         assert_eq!(snap.lists.len(), 1);
+    }
+
+    #[test]
+    fn a_list_in_list_order_without_a_name_reads_as_untitled() {
+        // See `list_exists`: in `list_order`, never named in `lists`.
+        let doc = Doc::new(1).unwrap();
+        doc.doc
+            .get_movable_list("list_order")
+            .insert(1, "orphan")
+            .unwrap();
+        doc.doc.commit();
+
+        let snap = doc.read(ViewFilter::All, "orphan", &FixedClock(0));
+        assert_eq!(snap.lists[1].name, "Untitled");
     }
 
     #[test]
@@ -2168,6 +2226,8 @@ mod tests {
         assert_eq!(t.rows()[2].parent_id.as_deref(), Some(p.as_str()));
         let snap = t.doc.read(ViewFilter::All, DEFAULT_LIST_ID, &FixedClock(0));
         assert_eq!(snap.lists[0].task_count, 4);
+        // x, s1, and p, which reads as open while s1 is. Not the done s2.
+        assert_eq!(snap.lists[0].active_count, 3);
     }
 
     #[test]

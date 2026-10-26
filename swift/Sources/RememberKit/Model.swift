@@ -46,6 +46,9 @@ public final class RememberModel {
     // ever called once, so this is the one listener its coordinator reports
     // through -- every round -- for as long as the app runs.
     private var autoSyncBridge: SyncStatusBridge?
+    /// Callers of `pushPendingChanges` still waiting for their changes to
+    /// reach the server.
+    private var pushWaiters: [@MainActor () -> Void] = []
 
     public init(
         dbPath: String = defaultDatabasePath(),
@@ -79,10 +82,14 @@ public final class RememberModel {
                         self?.lastSyncError = nil
                         self?.isMissingChanges = outcome.missingChanges
                         self?.refreshLastSyncedAt()
+                        self?.resolvePushWaiters(failed: false)
                     }
                 },
                 onError: { [weak self] error in
-                    Task { @MainActor in self?.lastSyncError = "\(error)" }
+                    Task { @MainActor in
+                        self?.lastSyncError = "\(error)"
+                        self?.resolvePushWaiters(failed: true)
+                    }
                 },
                 onSessionRefreshed: { [weak self] session in
                     Task { @MainActor in self?.persistRefreshed(session) }
@@ -111,6 +118,11 @@ public final class RememberModel {
     }
 
     public func setView(_ view: View) { app.setView(view: view) }
+
+    /// Completing a row keeps it in `snapshot`, done and in place, until
+    /// this is called -- the host decides how long a check-off lingers.
+    /// See `remember_core::Session::release_held`.
+    public func releaseHeld() { app.releaseHeld() }
 
     /// Switches which list the snapshot reflects (`snapshot?.currentList`)
     /// and the one new captures land in — see
@@ -204,6 +216,8 @@ public final class RememberModel {
         isSignedIn = false
         accountEmail = nil
         syncClient?.signOut(session: session)
+        // No more rounds will run to push anything.
+        resolvePushWaiters(failed: true)
     }
 
     /// Requests an immediate auto-sync attempt, bypassing the normal
@@ -212,6 +226,34 @@ public final class RememberModel {
     /// configured or the user isn't signed in.
     public func syncSoon() {
         syncClient?.syncSoon()
+    }
+
+    /// Asks for a sync round now and calls `done` once this device's changes
+    /// are on the server -- or a round failed, or there's nothing to push
+    /// (sync off, signed out, nothing changed), in which case right away.
+    /// For iOS, which suspends a backgrounded app: it keeps the app alive
+    /// just long enough that a task added right before leaving reaches the
+    /// other devices.
+    public func pushPendingChanges(done: @escaping @MainActor () -> Void) {
+        guard let syncClient, isSignedIn, hasUnpushedChanges else {
+            done()
+            return
+        }
+        pushWaiters.append(done)
+        syncClient.syncSoon()
+    }
+
+    private var hasUnpushedChanges: Bool {
+        (try? app.hasUnpushedChanges()) ?? false
+    }
+
+    /// A round that started before the last edit can finish without it;
+    /// the coordinator's debounce runs another, so keep waiting for that.
+    private func resolvePushWaiters(failed: Bool) {
+        guard !pushWaiters.isEmpty, failed || !hasUnpushedChanges else { return }
+        let waiters = pushWaiters
+        pushWaiters = []
+        waiters.forEach { $0() }
     }
 
     private func persist(_ session: Session) throws {

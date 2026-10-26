@@ -4,6 +4,8 @@
 //! persistence and debounced writes on top, while a host with its own
 //! storage (the web build) can drive a `Session` directly.
 
+use std::collections::HashSet;
+
 use crate::clock::{Clock, IdSource};
 use crate::command::{Command, ViewFilter};
 use crate::doc::{self, Doc};
@@ -16,6 +18,10 @@ pub struct Session {
     /// The list `current()` reads, and the one new captures land in —
     /// always a concrete list id.
     current_list: String,
+    /// Rows a `SetDone` just took out of the view, kept in it (in place,
+    /// with their new `done`) until [`Session::release_held`], so a row
+    /// doesn't vanish from under the finger that ticked it. Never stored.
+    held: HashSet<String>,
 }
 
 impl Session {
@@ -25,6 +31,7 @@ impl Session {
             doc,
             view: ViewFilter::default(),
             current_list: current_list.unwrap_or_else(|| doc::DEFAULT_LIST_ID.to_string()),
+            held: HashSet::new(),
         }
     }
 
@@ -42,6 +49,7 @@ impl Session {
         doc.set_local_offset_seconds(self.doc.local_offset_seconds());
         self.doc = doc;
         self.current_list = doc::DEFAULT_LIST_ID.to_string();
+        self.held.clear();
     }
 
     /// Applies `command`, filling in `Command::Add`'s missing `list_id`
@@ -59,6 +67,10 @@ impl Session {
         };
         let command = Self::resolve_capture_list(command, &self.current_list);
         let deleted_list_id = match &command {
+            Command::SetDone { id, done } => {
+                self.set_done(id, *done, clock)?;
+                return Ok(false);
+            }
             Command::DeleteList { id } => Some(id.clone()),
             _ => None,
         };
@@ -67,6 +79,41 @@ impl Session {
             Some(deleted_id) => self.repair_list_pointers(&deleted_id, clock),
             None => Ok(false),
         }
+    }
+
+    /// `SetDone`, holding every row it takes out of the view (a task's
+    /// steps go with it). Reopening a held task reopens the steps held
+    /// with it too: they were open a moment ago, and ticking the task
+    /// closed them.
+    fn set_done(&mut self, id: &str, done: bool, clock: &dyn Clock) -> Result<(), CoreError> {
+        let before = self.current(clock).rows;
+        let mut targets = vec![id];
+        if !done && self.held.contains(id) {
+            targets.extend(
+                before
+                    .iter()
+                    .filter(|r| r.parent_id.as_deref() == Some(id) && r.done)
+                    .filter(|r| self.held.contains(&r.id))
+                    .map(|r| r.id.as_str()),
+            );
+        }
+        self.doc.set_done(&targets, done)?;
+        let after: HashSet<String> = self.current(clock).rows.into_iter().map(|r| r.id).collect();
+        self.held.extend(
+            before
+                .into_iter()
+                .map(|r| r.id)
+                .filter(|id| !after.contains(id)),
+        );
+        Ok(())
+    }
+
+    /// Lets every held row leave the view. Returns whether any was held,
+    /// i.e. whether the snapshot changed.
+    pub fn release_held(&mut self) -> bool {
+        let any = !self.held.is_empty();
+        self.held.clear();
+        any
     }
 
     /// Re-points `current_list` when a successful `DeleteList` just removed
@@ -117,7 +164,9 @@ impl Session {
             Command::Shift { id, delta } => (id, Relative::Shift(delta)),
             other => return Ok(Some(other)),
         };
-        let rows = self.current(clock).rows;
+        // Held rows are on their way out: not something to move, or to
+        // move another row under.
+        let rows = self.doc.read(self.view, &self.current_list, clock).rows;
         let index = rows
             .iter()
             .position(|r| r.id == id)
@@ -189,8 +238,11 @@ impl Session {
         }
     }
 
+    /// Also releases held rows, as does `set_current_list`: they belong
+    /// to the view being left.
     pub fn set_view(&mut self, view: ViewFilter) {
         self.view = view;
+        self.held.clear();
     }
 
     pub fn current_list(&self) -> &str {
@@ -199,6 +251,7 @@ impl Session {
 
     pub fn set_current_list(&mut self, list_id: String) {
         self.current_list = list_id;
+        self.held.clear();
     }
 
     /// See [`crate::App::set_local_offset_seconds`].
@@ -225,7 +278,8 @@ impl Session {
     }
 
     pub fn current(&self, clock: &dyn Clock) -> Snapshot {
-        self.doc.read(self.view, &self.current_list, clock)
+        self.doc
+            .read_holding(self.view, &self.current_list, clock, &self.held)
     }
 }
 
@@ -434,6 +488,137 @@ mod tests {
         let before = revision(&s);
         run(&mut s, &ids, Command::Outdent { id: t[1].clone() });
         assert_eq!(revision(&s), before);
+    }
+
+    fn set_done(id: &str, done: bool) -> Command {
+        Command::SetDone {
+            id: id.into(),
+            done,
+        }
+    }
+
+    /// `outline`, with done rows marked.
+    fn shown(s: &Session) -> Vec<String> {
+        s.current(&FixedClock(NOW))
+            .rows
+            .into_iter()
+            .map(|r| {
+                let indent = if r.parent_id.is_some() { "  " } else { "" };
+                let mark = if r.done { "x " } else { "" };
+                format!("{indent}{mark}{}", r.title)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_completed_row_stays_in_place_until_released() {
+        let mut s = session();
+        let ids = SeqIdSource::new();
+        let t = add_tasks(&mut s, &ids, &["a", "b", "c"]);
+        s.set_view(ViewFilter::Active);
+
+        run(&mut s, &ids, set_done(&t[1], true));
+        assert_eq!(shown(&s), ["a", "x b", "c"]);
+
+        // Reopening it before release just reopens it.
+        run(&mut s, &ids, set_done(&t[1], false));
+        assert_eq!(shown(&s), ["a", "b", "c"]);
+        run(&mut s, &ids, set_done(&t[1], true));
+
+        assert!(s.release_held());
+        assert_eq!(shown(&s), ["a", "c"]);
+        assert!(!s.release_held());
+    }
+
+    #[test]
+    fn a_task_holds_its_open_steps_and_brings_them_back() {
+        let mut s = session();
+        let ids = SeqIdSource::new();
+        let t = add_tasks(&mut s, &ids, &["a", "s1", "s2", "s3", "b"]);
+        let (a, s1, s2, s3) = (&t[0], &t[1], &t[2], &t[3]);
+        for step in [s1, s2, s3] {
+            run(&mut s, &ids, indent(step));
+        }
+        run(&mut s, &ids, set_done(s3, true));
+        s.set_view(ViewFilter::Active);
+        assert_eq!(outline(&s), ["a", "  s1", "  s2", "b"]);
+
+        run(&mut s, &ids, set_done(a, true));
+        assert_eq!(shown(&s), ["x a", "  x s1", "  x s2", "b"]);
+
+        // s3 was done before; it stays done, and out of view.
+        let before = revision(&s);
+        run(&mut s, &ids, set_done(a, false));
+        assert_eq!(shown(&s), ["a", "  s1", "  s2", "b"]);
+        assert_eq!(revision(&s), before + 1);
+
+        // One undo step, back to all done.
+        run(&mut s, &ids, Command::Undo);
+        assert_eq!(shown(&s), ["x a", "  x s1", "  x s2", "b"]);
+        s.release_held();
+        assert_eq!(shown(&s), ["b"]);
+    }
+
+    #[test]
+    fn reopening_an_unheld_task_leaves_its_steps_alone() {
+        let mut s = session();
+        let ids = SeqIdSource::new();
+        let t = add_tasks(&mut s, &ids, &["a", "s1"]);
+        run(&mut s, &ids, indent(&t[1]));
+        run(&mut s, &ids, set_done(&t[0], true)); // in All: nothing leaves
+        s.set_view(ViewFilter::Active);
+
+        run(&mut s, &ids, set_done(&t[0], false));
+        assert_eq!(shown(&s), ["a"]);
+    }
+
+    #[test]
+    fn a_failed_completion_holds_nothing() {
+        let mut s = session();
+        let ids = SeqIdSource::new();
+        add_tasks(&mut s, &ids, &["a"]);
+        s.set_view(ViewFilter::Active);
+        let missing = s.dispatch(set_done("nope", true), &FixedClock(NOW), &ids);
+        assert!(matches!(missing, Err(CoreError::NotFound(_))));
+        assert!(!s.release_held());
+    }
+
+    #[test]
+    fn switching_view_list_or_doc_releases_held_rows() {
+        let mut s = session();
+        let ids = SeqIdSource::new();
+        let t = add_tasks(&mut s, &ids, &["a", "b", "c"]);
+        let work = add_list(&mut s, &ids, "Work");
+        s.set_view(ViewFilter::Active);
+
+        run(&mut s, &ids, set_done(&t[0], true));
+        s.set_view(ViewFilter::Active);
+        assert_eq!(outline(&s), ["b", "c"]);
+
+        run(&mut s, &ids, set_done(&t[1], true));
+        s.set_current_list(work);
+        s.set_current_list(doc::DEFAULT_LIST_ID.into());
+        assert_eq!(outline(&s), ["c"]);
+
+        run(&mut s, &ids, set_done(&t[2], true));
+        s.reset(Doc::new(2).expect("new doc"));
+        assert!(!s.release_held());
+    }
+
+    #[test]
+    fn held_rows_are_not_indented_under_or_shifted() {
+        let mut s = session();
+        let ids = SeqIdSource::new();
+        let t = add_tasks(&mut s, &ids, &["a", "b", "c"]);
+        s.set_view(ViewFilter::Active);
+        run(&mut s, &ids, set_done(&t[1], true));
+
+        // c goes under a, past the held b, and steps follow their task.
+        run(&mut s, &ids, indent(&t[2]));
+        assert_eq!(shown(&s), ["a", "  c", "x b"]);
+
+        let held = s.dispatch(shift(&t[1], 1), &FixedClock(NOW), &ids);
+        assert!(matches!(held, Err(CoreError::NotFound(_))));
     }
 
     #[test]

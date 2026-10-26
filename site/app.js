@@ -38,7 +38,7 @@ const SEED = [
 const ROW_HEIGHT = 40;
 const MAX_VISIBLE_ROWS = 8;
 // How long a checked-off row lingers before it leaves the list.
-const GHOST_MS = 1000;
+const RELEASE_MS = 1000;
 
 const $ = (id) => document.getElementById(id);
 const offsetSeconds = -new Date().getTimezoneOffset() * 60;
@@ -107,27 +107,15 @@ let dueDismissed = false;
 /** Id of the task captures go into as steps (CaptureView's `addTargetID`), or null. */
 let addTarget = null;
 /**
- * Rows just checked off, kept on screen for GHOST_MS in their old spot:
- * id → { row, anchor, timer, block }, where `anchor` is the id of the row
- * the ghost followed, or "" if it was first, and `block` (on a task) the
- * steps completed with it.
+ * Releases the rows the core keeps in view, done, after a check-off
+ * (`release_held`) — RELEASE_MS after the last toggle, so a run of
+ * check-offs leaves together. CaptureView's `releaseTask`.
  */
-const ghosts = new Map();
+let releaseTimer = null;
 
-/** Active rows in order, each ghost (recursively) reinserted after its anchor. */
+/** The snapshot's rows, held completed ones included. */
 function displayRows(s) {
-  const ghostEntries = [...ghosts.values()].map((g) => ({ anchor: g.anchor, row: g.row, completed: true }));
-  const anchoredTo = (anchor) =>
-    ghostEntries.filter((g) => g.anchor === anchor).flatMap((g) => [g, ...anchoredTo(g.row.id)]);
-  const anchored = [
-    ...anchoredTo(""),
-    ...s.rows
-      .filter((r) => !ghosts.has(r.id))
-      .flatMap((row) => [{ row, completed: false }, ...anchoredTo(row.id)]),
-  ];
-  // A ghost whose anchor is gone too has nowhere to go — put it last.
-  const placed = new Set(anchored.map((e) => e.row.id));
-  return [...anchored, ...ghostEntries.filter((g) => !placed.has(g.row.id))];
+  return s.rows.map((row) => ({ row, completed: row.done }));
 }
 
 /** The input first, then every displayed row. Wraps at both ends. */
@@ -158,9 +146,9 @@ function indentFocusedRow(outdent) {
   render();
 }
 
-/** Whether `id` is a live row, not a ghost only this view still shows. */
+/** Whether `id` is an open row, not a completed one the core only holds until release. */
 function isLive(id) {
-  return !ghosts.has(id) && app.snapshot().rows.some((r) => r.id === id);
+  return app.snapshot().rows.some((r) => r.id === id && !r.done);
 }
 
 /** "a": aim the input at the focused row's task. */
@@ -172,62 +160,32 @@ function targetFocused() {
   render();
 }
 
-/** The row at `i` plus, for a task, its steps shown below it. */
-function blockAt(rows, i) {
-  const block = [rows[i]];
-  if (rows[i].parent_id) return block;
-  for (let j = i + 1; j < rows.length && rows[j].parent_id === rows[i].id; j++) block.push(rows[j]);
-  return block;
-}
-
+/** The core holds a completed row (and the steps that went with it) in place until release. */
 function toggle(id) {
   focus = { type: "row", id };
-  const ghost = ghosts.get(id);
-  const drop = (ghostId) => {
-    clearTimeout(ghosts.get(ghostId)?.timer);
-    ghosts.delete(ghostId);
-  };
-  if (ghost) {
-    // A block completed together comes back together.
-    for (const ghostId of [id, ...(ghost.block ?? [])]) {
-      if (!ghosts.has(ghostId)) continue;
-      drop(ghostId);
-      dispatch({ type: "SetDone", id: ghostId, done: false });
-    }
-    // Reopening a step reopens its task.
-    if (ghost.row.parent_id) drop(ghost.row.parent_id);
-  } else {
-    const rows = app.snapshot().rows;
-    const i = rows.findIndex((r) => r.id === id);
-    if (i < 0) return;
-    // Its open steps are completed (and ghosted) with it.
-    dispatch({ type: "SetDone", id, done: true });
-    const block = blockAt(rows, i);
-    block.forEach((row, k) => {
-      ghosts.set(row.id, {
-        row,
-        anchor: i + k > 0 ? rows[i + k - 1].id : "",
-        timer: setTimeout(() => removeGhost(row.id), GHOST_MS),
-        block: k === 0 && block.length > 1 ? block.slice(1).map((r) => r.id) : undefined,
-      });
-    });
-  }
+  const row = app.snapshot().rows.find((r) => r.id === id);
+  if (!row) return;
+  dispatch({ type: "SetDone", id, done: !row.done });
+  clearTimeout(releaseTimer);
+  releaseTimer = setTimeout(releaseHeld, RELEASE_MS);
   render();
 }
 
-/** If the ghost held focus, hand it to whatever came after it. */
-function removeGhost(id) {
-  if (focus.type === "row" && focus.id === id) {
+/** If a completed row held focus, hand it to the next open row, or the input. */
+function releaseHeld() {
+  releaseTimer = null;
+  if (focus.type === "row" && !isLive(focus.id)) {
     const chain = focusChain(app.snapshot());
     const i = chain.findIndex((f) => sameFocus(f, focus));
-    focus = chain[(i + 1) % chain.length];
+    const rest = [...chain.slice(i + 1), ...chain.slice(0, i)];
+    focus = rest.find((f) => f.type === "input" || isLive(f.id));
   }
-  ghosts.delete(id);
+  app.release_held();
   render();
 }
 
 function beginEdit() {
-  if (focus.type !== "row" || ghosts.has(focus.id)) return;
+  if (focus.type !== "row" || !isLive(focus.id)) return;
   const row = app.snapshot().rows.find((r) => r.id === focus.id);
   if (!row) return;
   editText = row.title;
@@ -292,14 +250,6 @@ const input = $("input");
 
 function render() {
   const s = app.snapshot();
-  // ⌘Z can bring back a row that's still lingering as a ghost.
-  const live = new Set(s.rows.map((r) => r.id));
-  [...ghosts]
-    .filter(([id]) => live.has(id))
-    .forEach(([id, g]) => {
-      clearTimeout(g.timer);
-      ghosts.delete(id);
-    });
   const entries = displayRows(s);
   // The focused row can vanish under us (undo, list switch): fall back to the input.
   if ((focus.type === "row" || focus.type === "edit") && !entries.some((e) => e.row.id === focus.id)) {
@@ -307,7 +257,7 @@ function render() {
   }
 
   // The target is gone (completed, deleted, undone).
-  const target = s.rows.find((r) => r.id === addTarget);
+  const target = s.rows.find((r) => r.id === addTarget && !r.done);
   if (!target) addTarget = null;
   $("target").replaceChildren();
   if (target) {
