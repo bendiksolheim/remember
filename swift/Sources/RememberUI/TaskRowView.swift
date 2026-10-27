@@ -38,6 +38,7 @@ public struct TaskRowView: SwiftUI.View {
             .disabled(row.contextOnly)
 
             Text(row.title)
+                .font(.callout)
                 .strikethrough(row.done)
                 .foregroundStyle(row.done ? .secondary : .primary)
 

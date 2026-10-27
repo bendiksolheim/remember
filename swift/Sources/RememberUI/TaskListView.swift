@@ -54,7 +54,7 @@ public struct TaskListView: SwiftUI.View {
                     ParentChip(title: target.title) { addTargetID = nil }
                 }
                 TextField(addTarget == nil ? "Add a task…" : "Add a step…", text: $input)
-                    .font(.title3)
+                    .font(.body)
                     .focused($inputFocused)
                     .submitLabel(.done)
                     .onSubmit(addTask)
@@ -103,6 +103,8 @@ public struct TaskListView: SwiftUI.View {
             .onMove(perform: move)
         }
         .listStyle(.plain)
+        // The field grabs focus on launch, so scrolling is the way out.
+        .scrollDismissesKeyboard(.immediately)
         .animation(.easeOut(duration: 0.25), value: rows.map(\.id))
         .navigationTitle("Remember")
         .navigationBarTitleDisplayMode(.inline)
