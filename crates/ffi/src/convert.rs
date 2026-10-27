@@ -87,6 +87,8 @@ pub fn list_row_from_core(row: &remember_core::ListRow) -> ListRow {
         color: list_color_from_core(row.color),
         task_count: row.task_count,
         active_count: row.active_count,
+        due_today_count: row.due_today_count,
+        overdue_count: row.overdue_count,
     }
 }
 
@@ -346,12 +348,15 @@ mod tests {
             color: remember_core::ListColor::Teal,
             task_count: 4,
             active_count: 1,
+            due_today_count: 2,
+            overdue_count: 3,
         });
         assert_eq!(row.id, "l");
         assert_eq!(row.name, "Work");
         assert_eq!(row.color, ListColor::Teal);
         assert_eq!(row.task_count, 4);
         assert_eq!(row.active_count, 1);
+        assert_eq!((row.due_today_count, row.overdue_count), (2, 3));
     }
 
     #[test]
@@ -493,6 +498,8 @@ mod tests {
                 color: remember_core::ListColor::Pink,
                 task_count: 2,
                 active_count: 1,
+                due_today_count: 0,
+                overdue_count: 0,
             }],
             active_count: 3,
             can_undo: true,

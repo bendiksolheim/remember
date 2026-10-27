@@ -645,6 +645,8 @@ impl Doc {
                         color,
                         task_count: 0,
                         active_count: 0,
+                        due_today_count: 0,
+                        overdue_count: 0,
                     }
                 })
                 .collect();
@@ -653,6 +655,9 @@ impl Doc {
         let mut active_count = 0u32;
         let mut task_counts: HashMap<String, u32> = HashMap::new();
         let mut active_counts: HashMap<String, u32> = HashMap::new();
+        // Open tasks and steps due today / overdue per list, each by its
+        // own due date -- counted like `active_counts`.
+        let mut due_counts: HashMap<String, (u32, u32)> = HashMap::new();
         let list_name = list_name(&lists_map, list);
         let row = |entry: &Entry, done: bool, display_due: Option<i64>| TaskRow {
             id: entry.id.clone(),
@@ -688,6 +693,19 @@ impl Doc {
             let open = u32::from(!done) + (its_steps.len() - steps_done) as u32;
             active_count += open;
             *active_counts.entry(task.list_id.clone()).or_default() += open;
+            let open_dues = (!done)
+                .then_some(task.due)
+                .into_iter()
+                .chain(open_steps.clone().map(|s| s.due))
+                .flatten();
+            let counts = due_counts.entry(task.list_id.clone()).or_default();
+            for d in open_dues {
+                match due_state(d, now, self.local_offset_seconds) {
+                    DueState::Today => counts.0 += 1,
+                    DueState::Overdue => counts.1 += 1,
+                    DueState::Later | DueState::None => {}
+                }
+            }
             if task.list_id != list {
                 continue;
             }
@@ -724,6 +742,8 @@ impl Doc {
         for list_row in &mut list_rows {
             list_row.task_count = task_counts.get(&list_row.id).copied().unwrap_or(0);
             list_row.active_count = active_counts.get(&list_row.id).copied().unwrap_or(0);
+            (list_row.due_today_count, list_row.overdue_count) =
+                due_counts.get(&list_row.id).copied().unwrap_or_default();
         }
 
         Snapshot {
@@ -2380,6 +2400,42 @@ mod tests {
         );
         t.raw(&task, "due", 10 * DAY);
         assert_eq!(due(&t)[0], (Some(10 * DAY), tomorrow(), DueState::Later));
+    }
+
+    #[test]
+    fn lists_count_their_open_tasks_and_steps_due_today_and_overdue() {
+        const DAY: i64 = crate::civil::SECONDS_PER_DAY;
+        let mut t = Fixture::new();
+        let work = t.work_list();
+        let task = t.task("task");
+        let step = t.step("step", &task);
+        let done_step = t.step("done step", &task);
+        let late = t.task("late");
+        let elsewhere = t.task_in("elsewhere", &work);
+        t.raw(&task, "due", 0);
+        t.raw(&step, "due", -DAY);
+        t.raw(&done_step, "due", 0);
+        t.raw(&done_step, "done", true);
+        t.raw(&late, "due", -DAY);
+        t.task("tomorrow");
+        t.raw(&elsewhere, "due", 0);
+        let counts = |t: &Fixture| -> Vec<(u32, u32)> {
+            t.doc
+                .read(ViewFilter::Active, DEFAULT_LIST_ID, &FixedClock(0))
+                .lists
+                .iter()
+                .map(|l| (l.due_today_count, l.overdue_count))
+                .collect()
+        };
+
+        // Work is first. Each by its own date, done step left out.
+        assert_eq!(counts(&t), [(1, 0), (1, 2)]);
+        // A done task reads as open while a step is (and counts)...
+        t.raw(&task, "done", true);
+        assert_eq!(counts(&t), [(1, 0), (1, 2)]);
+        // ...and leaves with it.
+        t.raw(&step, "done", true);
+        assert_eq!(counts(&t), [(1, 0), (0, 1)]);
     }
 
     #[test]

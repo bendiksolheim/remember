@@ -5,7 +5,8 @@ import RememberKit
 /// Settings window (`ListsSettingsView`, `AccountSettingsView`). Lists come
 /// first: they're what's changed most often.
 struct SettingsView: SwiftUI.View {
-    /// Set when opened from the "+" pill: the cursor starts in "New List".
+    /// Set when opened from "New List" in the title menu: the cursor starts
+    /// in "New List".
     let focusNewList: Bool
     @Environment(RememberModel.self) private var model
     @Environment(\.dismiss) private var dismiss

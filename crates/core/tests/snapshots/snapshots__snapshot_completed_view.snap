@@ -37,6 +37,8 @@ lists:
     color: Blue
     task_count: 6
     active_count: 4
+    due_today_count: 1
+    overdue_count: 1
 active_count: 4
 can_undo: true
 can_redo: false

@@ -26,12 +26,12 @@ public struct TaskRowView: SwiftUI.View {
     public var body: some SwiftUI.View {
         HStack(spacing: 12) {
             Button(action: onToggle) {
-                // Accent highlights the incomplete, actionable state; a
-                // done checkmark fades to secondary since it no longer
-                // needs attention.
+                // The tint (the list's color) highlights the incomplete,
+                // actionable state; a done checkmark fades to secondary
+                // since it no longer needs attention.
                 Image(systemName: row.done ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
-                    .foregroundStyle(row.done ? Color.secondary : Color.accentColor)
+                    .foregroundStyle(row.done ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
             }
             .buttonStyle(.plain)
             // A context row is only a heading for its steps.

@@ -57,6 +57,9 @@ pub struct ListRow {
     /// The open ones -- tasks and steps -- counted like
     /// [`Snapshot::active_count`]: what the list has left to do.
     pub active_count: u32,
+    /// Of those, the ones whose own due date is today, and before today.
+    pub due_today_count: u32,
+    pub overdue_count: u32,
 }
 
 /// A list's identity color — an opaque palette slot, not a hex value, so
