@@ -1325,3 +1325,98 @@ fn a_built_in_list_deleted_elsewhere_survives_a_merge_as_a_working_list() {
     assert_eq!(snap.lists[0].id, work);
     assert_eq!(snap.active_count, 0);
 }
+
+fn edit(
+    doc: &mut Doc,
+    clock: &FixedClock,
+    ids: &SeqIdSource,
+    id: &str,
+    title: &str,
+    due: Option<i64>,
+) {
+    doc.apply(
+        Command::Edit {
+            id: id.to_string(),
+            title: title.to_string(),
+            due,
+        },
+        clock,
+        ids,
+    )
+    .unwrap();
+}
+
+#[test]
+fn edit_sets_title_and_due_in_one_undo_step() {
+    let mut doc = Doc::new(1).unwrap();
+    let clock = FixedClock(0);
+    let ids = SeqIdSource::new();
+    let id = add(&mut doc, &clock, &ids, "a");
+    let before = doc.read(ViewFilter::All, "default", &clock).revision;
+    edit(&mut doc, &clock, &ids, &id, "  b  ", Some(86_400));
+    let snap = doc.read(ViewFilter::All, "default", &clock);
+    assert_eq!(snap.revision, before + 1);
+    assert_eq!(snap.rows[0].title, "b");
+    assert_eq!(snap.rows[0].due, Some(86_400));
+
+    doc.apply(Command::Undo, &clock, &ids).unwrap();
+    let row = &doc.read(ViewFilter::All, "default", &clock).rows[0];
+    assert_eq!((row.title.as_str(), row.due), ("a", None));
+}
+
+#[test]
+fn edit_clears_due() {
+    let mut doc = Doc::new(1).unwrap();
+    let clock = FixedClock(0);
+    let ids = SeqIdSource::new();
+    let id = add(&mut doc, &clock, &ids, "a");
+    edit(&mut doc, &clock, &ids, &id, "a", Some(86_400));
+    edit(&mut doc, &clock, &ids, &id, "a", None);
+    let row = &doc.read(ViewFilter::All, "default", &clock).rows[0];
+    assert_eq!((row.due, row.due_label.as_deref()), (None, None));
+}
+
+#[test]
+fn edit_with_nothing_changed_is_noop() {
+    let mut doc = Doc::new(1).unwrap();
+    let clock = FixedClock(0);
+    let ids = SeqIdSource::new();
+    let id = add(&mut doc, &clock, &ids, "a");
+    edit(&mut doc, &clock, &ids, &id, "a", Some(86_400));
+    let before = doc.read(ViewFilter::All, "default", &clock).revision;
+    edit(&mut doc, &clock, &ids, &id, "a", Some(86_400));
+    assert_eq!(
+        doc.read(ViewFilter::All, "default", &clock).revision,
+        before
+    );
+}
+
+#[test]
+fn edit_with_empty_title_keeps_title_but_sets_due() {
+    let mut doc = Doc::new(1).unwrap();
+    let clock = FixedClock(0);
+    let ids = SeqIdSource::new();
+    let id = add(&mut doc, &clock, &ids, "a");
+    edit(&mut doc, &clock, &ids, &id, "   ", Some(86_400));
+    let row = &doc.read(ViewFilter::All, "default", &clock).rows[0];
+    assert_eq!((row.title.as_str(), row.due), ("a", Some(86_400)));
+}
+
+#[test]
+fn edit_unknown_id_is_not_found() {
+    let mut doc = Doc::new(1).unwrap();
+    let clock = FixedClock(0);
+    let ids = SeqIdSource::new();
+    let err = doc
+        .apply(
+            Command::Edit {
+                id: "nope".to_string(),
+                title: "   ".to_string(),
+                due: None,
+            },
+            &clock,
+            &ids,
+        )
+        .unwrap_err();
+    assert_eq!(err, CoreError::NotFound("nope".to_string()));
+}

@@ -292,6 +292,11 @@ fn arb_raw_command() -> impl Strategy<Value = Command> {
         (id, ".*").prop_map(|(id, notes)| Command::SetNotes { id, notes }),
         (id, any::<bool>()).prop_map(|(id, done)| Command::SetDone { id, done }),
         (id, proptest::option::of(any::<i64>())).prop_map(|(id, due)| Command::SetDue { id, due }),
+        (id, ".*", proptest::option::of(any::<i64>())).prop_map(|(id, title, due)| Command::Edit {
+            id,
+            title,
+            due
+        }),
         (id, proptest::option::of(id)).prop_map(|(id, after)| Command::Move { id, after }),
         id.prop_map(|id| Command::Delete { id }),
         (id, id).prop_map(|(id, list_id)| Command::SetList { id, list_id }),

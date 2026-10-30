@@ -33,6 +33,14 @@ pub enum Command {
         id: String,
         due: Option<i64>,
     },
+    /// Inline editing's Enter: `SetTitle` and `SetDue` as one change, so
+    /// one `Undo` reverts both. An empty title keeps the old one, as with
+    /// `SetTitle`.
+    Edit {
+        id: String,
+        title: String,
+        due: Option<i64>,
+    },
     Move {
         id: String,
         after: Option<String>,

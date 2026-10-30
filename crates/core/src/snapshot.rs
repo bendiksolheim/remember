@@ -10,8 +10,8 @@ pub struct TaskRow {
     pub notes: String,
     /// False while any of a task's steps is open, whatever is stored.
     pub done: bool,
-    /// The task's own due date, for editing. `due_label`/`due_state` are
-    /// for display and, for a task with steps, cover its open steps too.
+    /// The task's own due date, for editing; `due_label`/`due_state` show
+    /// the same date. A task never shows its steps' dates.
     pub due: Option<i64>,
     pub due_label: Option<String>,
     pub due_state: DueState,

@@ -48,6 +48,12 @@ pub enum Command {
         id: String,
         due: Option<i64>,
     },
+    /// See `remember_core::Command::Edit`.
+    Edit {
+        id: String,
+        title: String,
+        due: Option<i64>,
+    },
     Move {
         id: String,
         after: Option<String>,

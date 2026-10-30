@@ -15,7 +15,8 @@ const SEED = [
     tasks: [
       "Type “call mum tomorrow” above and press Return",
       "Press ↓ to focus a task, then Space to complete it",
-      "Press E to rename the focused task",
+      "Press E to edit the focused task; end it with “fri” to change its date",
+      "Press D to remove the focused task’s date",
       "Move the focused task with ⌥⇧J and ⌥⇧K",
       "⌘Z undoes anything, ⇧⌘Z redoes",
       {
@@ -101,6 +102,12 @@ function dispatch(command) {
 /** `{ type: "input" }`, `{ type: "row", id }`, `{ type: "edit", id }` or `{ type: "none" }`. */
 let focus = { type: "input" };
 let editText = "";
+/** The due phrase detected in `editText` once it differs from the title, like `detection` for the input. */
+let editDetection = null;
+/** Set when the edit pill's × dismisses `editDetection`; cleared on the next keystroke. */
+let editDueDismissed = false;
+/** Set when the edit pill's × removes the task's current date. */
+let editDueRemoved = false;
 let detection = null;
 /** Set when the badge is clicked; cleared on the next keystroke. */
 let dueDismissed = false;
@@ -193,13 +200,49 @@ function beginEdit() {
   render();
 }
 
-/** `SetTitle` trims and ignores an empty title itself. */
+function resetEdit() {
+  editText = "";
+  editDetection = null;
+  editDueDismissed = false;
+  editDueRemoved = false;
+}
+
+/**
+ * What the edit field's pill shows and Enter saves: a detected phrase
+ * unless dismissed, else the task's own date unless removed. CaptureView's
+ * `editDue`.
+ */
+function editDue(row) {
+  if (editDetection && !editDueDismissed) {
+    const d = editDetection;
+    return { label: d.label, due: d.due, title: d.stripped_title, detected: true };
+  }
+  const due = editDueRemoved ? null : row.due;
+  return { label: due === null ? null : row.due_label, due, title: editText, detected: false };
+}
+
+/** `Edit` trims and ignores an empty title itself, so "fri" alone only re-dates. */
 function endEdit(commit) {
   if (focus.type !== "edit") return;
-  if (commit) dispatch({ type: "SetTitle", id: focus.id, title: editText });
+  const row = app.snapshot().rows.find((r) => r.id === focus.id);
+  if (commit && row) {
+    const { title, due } = editDue(row);
+    dispatch({ type: "Edit", id: row.id, title, due });
+  }
   focus = { type: "row", id: focus.id };
-  editText = "";
+  resetEdit();
   render();
+}
+
+function removeDue(id) {
+  dispatch({ type: "SetDue", id, due: null });
+  render();
+}
+
+/** D: drops the focused row's date. */
+function removeFocusedDue() {
+  if (focus.type !== "row" || !isLive(focus.id)) return;
+  removeDue(focus.id);
 }
 
 function selectList(id) {
@@ -215,6 +258,7 @@ const ICONS = {
   circle: `<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>`,
   checked: `<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7.65" fill="currentColor"/><path d="M4.9 8.3l2.1 2.2 4.2-4.7" fill="none" stroke="#2a2a2e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   chevron: `<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M3.5 1.5L7 5 3.5 8.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  xmark: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
   calendar: `<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="2.75" width="12.5" height="11.5" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2 6.25h12" stroke="currentColor" stroke-width="1.3"/><path d="M5 1.5v2.5M11 1.5v2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`,
 };
 
@@ -229,12 +273,22 @@ function dueTint(state, done) {
   return "var(--secondary)";
 }
 
-function chip(label, tint, tag = "span") {
-  const el = document.createElement(tag);
+/** CaptureDueChip: the date, and with `onRemove` a × that calls it. */
+function chip(label, tint, onRemove = null, removeTitle = "Remove the due date") {
+  const el = document.createElement("span");
   el.className = "chip";
   el.style.setProperty("--tint", tint);
   el.innerHTML = ICONS.calendar;
   el.append(label);
+  if (onRemove) {
+    const remove = unfocusable(document.createElement("button"));
+    remove.className = "remove";
+    remove.title = removeTitle;
+    remove.setAttribute("aria-label", removeTitle);
+    remove.innerHTML = ICONS.xmark;
+    remove.onclick = onRemove;
+    el.append(remove);
+  }
   return el;
 }
 
@@ -279,13 +333,11 @@ function render() {
 
   $("badge").replaceChildren();
   if (detection && !dueDismissed) {
-    const badge = unfocusable(chip(detection.label, "var(--accent)", "button"));
-    badge.title = "Don’t set a due date";
-    badge.onclick = () => {
+    const dismiss = () => {
       dueDismissed = true;
       render();
     };
-    $("badge").append(badge);
+    $("badge").append(chip(detection.label, "var(--accent)", dismiss, "Don’t set a due date"));
   }
 
   $("pills").replaceChildren(...s.lists.map((l, i) => {
@@ -331,15 +383,38 @@ function render() {
       field.type = "text";
       field.value = editText;
       field.spellcheck = false;
-      field.oninput = () => (editText = field.value);
+      // Only the pill re-renders while typing: rebuilding the field would
+      // move the caret.
+      const pill = document.createElement("span");
+      pill.className = "edit-due";
+      const renderPill = () => {
+        const shown = editDue(row);
+        if (!shown.label) return pill.replaceChildren();
+        const tint = shown.detected ? "var(--accent)" : dueTint(row.due_state, completed);
+        const remove = () => {
+          if (shown.detected) editDueDismissed = true;
+          else editDueRemoved = true;
+          renderPill();
+        };
+        const title = shown.detected ? "Don’t change the due date" : "Remove the due date";
+        pill.replaceChildren(chip(shown.label, tint, remove, title));
+      };
+      field.oninput = () => {
+        editText = field.value;
+        // Not the title as it was: a title ending in "friday" mustn't re-date itself.
+        editDetection = editText && editText !== row.title ? app.detect_due(editText) ?? null : null;
+        editDueDismissed = false;
+        renderPill();
+      };
       field.onkeydown = (e) => {
         if (e.key === "Enter") endEdit(true);
         else if (e.key === "Escape") endEdit(false);
         else return;
         e.preventDefault();
       };
-      el.append(field);
+      el.append(field, pill);
       focusEl = field;
+      renderPill();
     } else {
       const title = document.createElement("span");
       title.className = "title";
@@ -351,14 +426,17 @@ function render() {
         progress.textContent = `${row.steps_done}/${row.step_count}`;
         el.append(progress);
       }
-      if (row.due_label) el.append(chip(row.due_label, dueTint(row.due_state, completed)));
+      if (row.due_label) {
+        const remove = completed ? null : () => removeDue(row.id);
+        el.append(chip(row.due_label, dueTint(row.due_state, completed), remove));
+      }
     }
 
     el.addEventListener("mousedown", (e) => {
       // Let clicks place the caret, and leave the button alive for its click.
-      if (editing || e.target.closest(".check")) return;
+      if (editing || e.target.closest(".check, .remove")) return;
       e.preventDefault();
-      if (focus.type === "edit") editText = "";
+      if (focus.type === "edit") resetEdit();
       focus = { type: "row", id: row.id };
       render();
     });
@@ -384,7 +462,7 @@ function render() {
 
 input.addEventListener("focus", () => {
   if (focus.type === "input") return;
-  editText = "";
+  resetEdit();
   focus = { type: "input" };
   render();
 });
@@ -421,7 +499,7 @@ input.addEventListener("keydown", (e) => {
 // Clicking the "desktop" is the panel losing key status: drop any edit.
 document.addEventListener("mousedown", (e) => {
   if (e.target.closest(".panel")) return;
-  editText = "";
+  resetEdit();
   focus = { type: "none" };
   render();
 });
@@ -497,6 +575,9 @@ document.addEventListener("keydown", (e) => {
   } else if (focus.type === "row" && e.code === "KeyA") {
     e.preventDefault();
     targetFocused();
+  } else if (focus.type === "row" && e.code === "KeyD") {
+    e.preventDefault();
+    removeFocusedDue();
   }
 });
 

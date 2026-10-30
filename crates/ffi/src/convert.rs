@@ -25,6 +25,7 @@ pub fn command_to_core(command: Command) -> remember_core::Command {
         Command::SetNotes { id, notes } => remember_core::Command::SetNotes { id, notes },
         Command::SetDone { id, done } => remember_core::Command::SetDone { id, done },
         Command::SetDue { id, due } => remember_core::Command::SetDue { id, due },
+        Command::Edit { id, title, due } => remember_core::Command::Edit { id, title, due },
         Command::Move { id, after } => remember_core::Command::Move { id, after },
         Command::Delete { id } => remember_core::Command::Delete { id },
         Command::SetList { id, list_id } => remember_core::Command::SetList { id, list_id },
@@ -237,6 +238,14 @@ mod tests {
                 due: None
             }),
             remember_core::Command::SetDue { due: None, .. }
+        ));
+        assert!(matches!(
+            command_to_core(Command::Edit {
+                id: "i".to_string(),
+                title: "t".to_string(),
+                due: Some(5)
+            }),
+            remember_core::Command::Edit { id, title, due: Some(5) } if id == "i" && title == "t"
         ));
         assert!(matches!(
             command_to_core(Command::Move {

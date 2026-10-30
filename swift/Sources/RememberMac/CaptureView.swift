@@ -63,6 +63,13 @@ struct CaptureView: SwiftUI.View {
     /// `.disabled` gate can both read/drive it directly.
     @State private var editingRowID: String?
     @State private var editText = ""
+    /// `dueDetection`/`dueDismissed` for the edit field. Only detected once
+    /// the text differs from the task's title, so a title that already ends
+    /// in "friday" doesn't re-date itself just by being edited.
+    @State private var editDueDetection: DueDetection?
+    @State private var editDueDismissed = false
+    /// Set when the edit pill's × removes the task's current date.
+    @State private var editDueRemoved = false
     /// Releases the rows remember-core keeps in view, done, after a
     /// completion (see `RememberModel.releaseHeld`) -- a second after the
     /// last toggle, so a run of check-offs leaves together.
@@ -119,7 +126,9 @@ struct CaptureView: SwiftUI.View {
                         dueDismissed = false
                     }
                 if let detection = dueDetection, !dueDismissed {
-                    CaptureDueBadge(label: detection.label) { dueDismissed = true }
+                    CaptureDueChip(label: detection.label, removeHelp: "Don’t set a due date") {
+                        dueDismissed = true
+                    }
                 }
             }
             .padding(.horizontal, 20)
@@ -152,11 +161,14 @@ struct CaptureView: SwiftUI.View {
                                 isFocused: focus == .row(entry.row.id),
                                 isEditing: editingRowID == entry.row.id,
                                 editText: $editText,
+                                editDue: editingRowID == entry.row.id ? editDue(for: entry.row) : nil,
                                 focus: $focus,
                                 onToggle: { toggle(id: entry.row.id) },
                                 onFocusRequest: { focus = .row(entry.row.id) },
                                 onCommitEdit: commitEdit,
-                                onCancelEdit: cancelEdit
+                                onCancelEdit: cancelEdit,
+                                onRemoveDue: { model.dispatch(.setDue(id: entry.row.id, due: nil)) },
+                                onRemoveEditDue: removeEditDue
                             )
                             // A fading-move row is inert -- see
                             // `fadingMoveIDs`'s doc comment -- so it's
@@ -225,6 +237,14 @@ struct CaptureView: SwiftUI.View {
             guard case .editingRow(let id)? = oldValue, editingRowID == id else { return }
             editingRowID = nil
             editText = ""
+            resetEditDue()
+        }
+        .onChange(of: editText) { _, newValue in
+            guard let id = editingRowID,
+                let row = displayRows.first(where: { $0.row.id == id })?.row
+            else { return }
+            editDueDetection = newValue.isEmpty || newValue == row.title ? nil : model.detectDue(newValue)
+            editDueDismissed = false
         }
         .overlay {
             // Hidden buttons rather than a raw NSEvent monitor: SwiftUI's
@@ -280,6 +300,10 @@ struct CaptureView: SwiftUI.View {
                 // "e", so it never eats an "a" typed into a field.
                 Button("Add Step to Focused") { targetFocusedRow() }
                     .keyboardShortcut("a", modifiers: [])
+                    .disabled(!canEditFocusedRow)
+                // Bare "d": remove the focused row's due date. Gated like "e".
+                Button("Remove Due Date from Focused") { removeFocusedDue() }
+                    .keyboardShortcut("d", modifiers: [])
                     .disabled(!canEditFocusedRow)
             }
             .hidden()
@@ -535,18 +559,61 @@ struct CaptureView: SwiftUI.View {
         guard case .row(let id)? = focus,
             let entry = displayRows.first(where: { $0.row.id == id })
         else { return }
+        resetEditDue()
         editingRowID = id
         editText = entry.row.title
         focus = .editingRow(id)
     }
 
-    /// Enter finalizes: dispatches the draft unconditionally. `SetTitle`
-    /// trims and no-ops on an empty result itself (see remember-core), so an
-    /// emptied title just silently reverts -- no client-side empty check
-    /// needed here.
+    /// What the edit field's pill shows and Enter saves: a detected phrase
+    /// (its title stripped) unless dismissed, else the task's own date
+    /// unless removed.
+    fileprivate struct EditDue {
+        let label: String?
+        let due: Int64?
+        let title: String
+        let detected: Bool
+    }
+
+    private func editDue(for row: TaskRow) -> EditDue {
+        if let detection = editDueDetection, !editDueDismissed {
+            return EditDue(label: detection.label, due: detection.due, title: detection.strippedTitle, detected: true)
+        }
+        let due = editDueRemoved ? nil : row.due
+        return EditDue(label: due == nil ? nil : row.dueLabel, due: due, title: editText, detected: false)
+    }
+
+    /// The edit pill's ×: dismisses a detected phrase, else removes the
+    /// current date. Nothing is saved until Enter.
+    private func removeEditDue() {
+        if editDueDetection != nil, !editDueDismissed {
+            editDueDismissed = true
+        } else {
+            editDueRemoved = true
+        }
+    }
+
+    private func resetEditDue() {
+        editDueDetection = nil
+        editDueDismissed = false
+        editDueRemoved = false
+    }
+
+    private func removeFocusedDue() {
+        guard canEditFocusedRow, case .row(let id)? = focus else { return }
+        model.dispatch(.setDue(id: id, due: nil))
+    }
+
+    /// Enter finalizes: dispatches the draft unconditionally, title and
+    /// date in one `Edit` (one undo step). `Edit` trims and keeps the old
+    /// title on an empty result itself (see remember-core), so an emptied
+    /// title just silently reverts, and "fri" alone only re-dates.
     private func commitEdit() {
         guard let id = editingRowID else { return }
-        model.dispatch(.setTitle(id: id, title: editText))
+        if let row = displayRows.first(where: { $0.row.id == id })?.row {
+            let result = editDue(for: row)
+            model.dispatch(.edit(id: id, title: result.title, due: result.due))
+        }
         endEdit(returnFocusTo: id)
     }
 
@@ -567,6 +634,7 @@ struct CaptureView: SwiftUI.View {
     private func endEdit(returnFocusTo id: String) {
         editingRowID = nil
         editText = ""
+        resetEditDue()
         DispatchQueue.main.async {
             focus = .row(id)
         }
@@ -874,11 +942,15 @@ private struct CaptureTaskRow: SwiftUI.View {
     let isFocused: Bool
     let isEditing: Bool
     @Binding var editText: String
+    /// While editing, the date the pill shows instead of `row`'s own.
+    let editDue: CaptureView.EditDue?
     var focus: FocusState<CaptureView.FocusTarget?>.Binding
     let onToggle: () -> Void
     let onFocusRequest: () -> Void
     let onCommitEdit: () -> Void
     let onCancelEdit: () -> Void
+    let onRemoveDue: () -> Void
+    let onRemoveEditDue: () -> Void
 
     var body: some SwiftUI.View {
         HStack(spacing: 10) {
@@ -915,8 +987,22 @@ private struct CaptureTaskRow: SwiftUI.View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            if let label = row.dueLabel, !isEditing {
-                CaptureDueChip(label: label, tint: dueChipColor(state: row.dueState, done: completed))
+            if isEditing {
+                if let editDue, let label = editDue.label {
+                    CaptureDueChip(
+                        label: label,
+                        tint: editDue.detected ? .accentColor : dueChipColor(state: row.dueState, done: completed),
+                        removeHelp: editDue.detected ? "Don’t change the due date" : "Remove the due date",
+                        onRemove: onRemoveEditDue
+                    )
+                }
+            } else if let label = row.dueLabel {
+                // No × on a done row: its date is no longer a call to action.
+                CaptureDueChip(
+                    label: label,
+                    tint: dueChipColor(state: row.dueState, done: completed),
+                    onRemove: completed ? nil : onRemoveDue
+                )
             }
         }
         .padding(.leading, row.parentId == nil ? 20 : 46)
@@ -946,21 +1032,48 @@ private struct CaptureTaskRow: SwiftUI.View {
     }
 }
 
-/// The visual due-date chip — calendar icon on a capsule background. Used
-/// as plain decoration on task rows, and (wrapped in `CaptureDueBadge`
-/// below) as the clickable quick-add detection indicator, so a due date
-/// looks the same wherever it's shown.
+/// The due-date pill — calendar icon on a capsule background — on task
+/// rows, in the edit field and next to the quick-add field, so a due date
+/// looks the same wherever it's shown. With `onRemove`, its right half is a
+/// × that calls it; the date half is only a label (a click on a row's pill
+/// falls through to the row).
 private struct CaptureDueChip: SwiftUI.View {
     let label: String
     var tint: Color = .accentColor
+    var removeHelp = "Remove the due date"
+    var onRemove: (() -> Void)?
 
     var body: some SwiftUI.View {
-        Label(label, systemImage: "calendar")
-            .font(.caption)
-            .foregroundStyle(tint)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(tint.opacity(0.2), in: Capsule())
+        HStack(spacing: 0) {
+            Label(label, systemImage: "calendar")
+                .padding(.leading, 8)
+                .padding(.trailing, onRemove == nil ? 8 : 5)
+                .padding(.vertical, 4)
+            if let onRemove {
+                Button(action: onRemove) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .padding(.leading, 5)
+                        .padding(.trailing, 7)
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                // Not part of the alt+j/alt+k row-focus chain or Tab order --
+                // `d` is the keyboard way to remove a date.
+                .focusable(false)
+                .help(removeHelp)
+                .accessibilityLabel(removeHelp)
+                .overlay(alignment: .leading) {
+                    Rectangle()
+                        .fill(tint.opacity(0.35))
+                        .frame(width: 1)
+                }
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(tint)
+        .background(tint.opacity(0.2), in: Capsule())
     }
 }
 
@@ -1026,22 +1139,4 @@ private struct WidthCapLayout: Layout {
 extension Notification.Name {
     /// Posted by `AppDelegate` whenever it orders the capture panel out.
     static let rememberCapturePanelDidHide = Notification.Name("rememberCapturePanelDidHide")
-}
-
-/// A clickable `CaptureDueChip` showing a live-detected due date, for the
-/// quick-add field. Clicking it calls `onDismiss` — the caller is
-/// responsible for clearing the detection state that produced `label`.
-private struct CaptureDueBadge: SwiftUI.View {
-    let label: String
-    let onDismiss: () -> Void
-
-    var body: some SwiftUI.View {
-        Button(action: onDismiss) {
-            CaptureDueChip(label: label)
-        }
-        .buttonStyle(.plain)
-        // Not part of the alt+j/alt+k row-focus chain or Tab order — it's a
-        // click-only escape hatch, not a navigable control.
-        .focusable(false)
-    }
 }
