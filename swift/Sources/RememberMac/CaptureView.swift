@@ -984,10 +984,42 @@ private struct CaptureParentChip: SwiftUI.View {
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(Color.accentColor.opacity(0.2), in: Capsule())
-            .frame(maxWidth: 220, alignment: .leading)
         }
         .buttonStyle(.plain)
         .focusable(false)
+        // Not `.frame(maxWidth: 220)`: a flexible frame grows to whatever
+        // the input row's HStack offers (up to 220), leaving a gap between
+        // a short chip and the text field. `WidthCap` only ever shrinks.
+        .modifier(WidthCap(max: 220))
+    }
+}
+
+/// Caps a view's width at `max` (so a long title truncates) while still
+/// sizing it to its content when that's narrower -- unlike
+/// `.frame(maxWidth:)`, which expands to fill any proposal up to `max`.
+private struct WidthCap: ViewModifier {
+    let max: CGFloat
+
+    func body(content: Content) -> some SwiftUI.View {
+        WidthCapLayout(max: max) { content }
+    }
+}
+
+private struct WidthCapLayout: Layout {
+    let max: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let child = subviews.first else { return .zero }
+        let width = proposal.width.map { Swift.min($0, max) } ?? max
+        let size = child.sizeThatFits(ProposedViewSize(width: width, height: proposal.height))
+        return CGSize(width: Swift.min(size.width, max), height: size.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(
+            at: bounds.origin,
+            proposal: ProposedViewSize(width: bounds.width, height: bounds.height)
+        )
     }
 }
 
